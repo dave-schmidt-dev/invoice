@@ -1,0 +1,24 @@
+{
+  "payee": {
+    "name": "Jane Doe",
+    "address": "123 Freelancer Lane",
+    "city": "San Francisco",
+    "state": "CA",
+    "zip": "94105",
+    "email": "jane@example.com",
+    "phone": "555-867-5309"
+  },
+  "payer": {
+    "name": "Acme Corp",
+    "address": "456 Corporate Blvd",
+    "city": "New York",
+    "state": "NY",
+    "zip": "10001",
+    "contact": "John Smith"
+  },
+  "payment": {
+    "bank_name": "First National Bank",
+    "routing": "021000021",
+    "account": "1234567890"
+  }
+}
