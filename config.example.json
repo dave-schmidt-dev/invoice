@@ -1,4 +1,8 @@
 {
+  "invoice_header": {
+    "title": "INVOICE",
+    "logo_path": "/Users/janedoe/logo.png"
+  },
   "payee": {
     "name": "Jane Doe",
     "address": "123 Freelancer Lane",
@@ -8,18 +12,29 @@
     "email": "jane@example.com",
     "phone": "555-867-5309"
   },
-  "payer": {
-    "name": "Acme Corp",
-    "address": "456 Corporate Blvd",
-    "city": "New York",
-    "state": "NY",
-    "zip": "10001",
-    "contact": "John Smith"
-  },
+  "clients": [
+    {
+      "name": "Acme Corp",
+      "address": "456 Corporate Blvd",
+      "city": "New York",
+      "state": "NY",
+      "zip": "10001",
+      "contact": "John Smith"
+    },
+    {
+      "name": "Globex Inc",
+      "address": "789 Enterprise Ave",
+      "city": "Springfield",
+      "state": "IL",
+      "zip": "62701",
+      "contact": "Jane Jones"
+    }
+  ],
   "payment": {
     "bank_name": "First National Bank",
     "routing": "021000021",
-    "account": "1234567890"
+    "account": "1234567890",
+    "description": "Please remit payment via ACH transfer or check made payable to Jane Doe."
   },
   "storage": {
     "csv_file": "/Users/janedoe/invoices/invoices.csv",
