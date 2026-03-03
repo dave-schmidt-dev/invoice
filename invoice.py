@@ -419,7 +419,7 @@ def generate_pdf(invoice_number, invoice_date, config, line_items, output_path,
         pdf.cell(0, 14, title_text, align="R", new_x="LMARGIN", new_y="NEXT")
 
     pdf.set_font("Helvetica", "", 10)
-    pdf.cell(0, 5, f"Invoice #: {invoice_number:04d}", align="R", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 5, f"Invoice #: {invoice_number}", align="R", new_x="LMARGIN", new_y="NEXT")
     pdf.cell(0, 5, f"Date: {invoice_date}", align="R", new_x="LMARGIN", new_y="NEXT")
     if payment_terms:
         pdf.cell(0, 5, f"Payment Terms: {payment_terms}", align="R", new_x="LMARGIN", new_y="NEXT")
