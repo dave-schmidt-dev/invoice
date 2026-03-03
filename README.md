@@ -34,6 +34,21 @@ Generate beautiful, professional PDF invoices with a simple CLI interface.
 pip install -r requirements.txt
 ```
 
+**🐍 Virtual Environment Recommended**:
+
+If your system Python is managed by a package manager (like Homebrew on macOS), use a virtual environment:
+
+```bash
+# Create and activate virtual environment
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Install dependencies in the virtual environment
+pip install -r requirements.txt
+```
+
+This prevents conflicts with system-wide Python packages and ensures a clean environment.
+
 ## 🚀 Quick Start
 
 ### 1️⃣ Configure payee & payer information
@@ -113,7 +128,7 @@ python invoice.py list
 ```
 #       Date          Payer                           Total   PDF
 --------------------------------------------------------------------------------
-0001    2024-05-01    Acme Corp                    $2175.00   ~/invoices/invoice_0001_2024-05-01.pdf
+2026-0001 2026-03-03  Acme Corporation             $2175.00   ~/invoices/Acme_Corporation_Invoice_2026-0001.pdf
 ```
 
 ## Running from anywhere
