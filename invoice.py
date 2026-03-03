@@ -901,7 +901,7 @@ def cmd_list(status):
             f"{row['date']:<14}"
             f"{row['payer_name']:<28}"
             f"${row['total']:>9}   "
-            f"{row.get('status', 'Draft'):<12}"
+            f"{row.get('status', 'Draft'):<12}  "
             f"{row['pdf_file']}"
         )
     click.echo()
