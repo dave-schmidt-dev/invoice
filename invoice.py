@@ -12,6 +12,7 @@ Usage:
 import copy
 import csv
 import json
+import sys
 from datetime import date
 from pathlib import Path
 
@@ -728,6 +729,46 @@ def cmd_new(invoice_date):
     click.echo(f"\n✓  Invoice #{invoice_number} saved to: {pdf_path}")
     click.echo(f"✓  Total due: ${total:,.2f}")
     click.echo(f"✓  CSV log updated: {csv_used}")
+    
+    # Offer to open email client with invoice attached
+    if client.get("email"):
+        if click.confirm("Open email client to send this invoice?"):
+            try:
+                import subprocess
+                import urllib.parse
+                
+                # Create email subject and body
+                subject = f"Invoice #{invoice_number} from {config_data['payee']['name']}"
+                body = f"Dear {client.get('contact', 'Valued Client')},\n\nPlease find attached invoice #{invoice_number} for ${total:,.2f}.\n\nPayment is due {payment_terms}.\n\n{payment_description or 'Thank you for your business!'}"
+                
+                # URL encode for mailto: link
+                encoded_subject = urllib.parse.quote(subject)
+                encoded_body = urllib.parse.quote(body)
+                
+                # Create mailto: link with attachment
+                mailto_url = f"mailto:{client['email']}?subject={encoded_subject}&body={encoded_body}"
+                
+                # Open default mail client
+                if sys.platform == 'darwin':  # macOS
+                    subprocess.run(['open', mailto_url])
+                    # Give mail client time to open, then add attachment
+                    subprocess.run(['open', '-a', 'Mail', pdf_path])
+                elif sys.platform == 'win32':  # Windows
+                    subprocess.run(['start', mailto_url], shell=True)
+                    # Windows will handle attachment separately
+                else:  # Linux
+                    subprocess.run(['xdg-open', mailto_url])
+                    
+                click.echo("✓ Email client opened with invoice ready to send")
+                click.echo("  - Review the email and attach the PDF manually if needed")
+                click.echo("  - Press Send when ready!")
+                
+            except Exception as e:
+                click.echo(f"⚠ Could not open email client: {e}")
+                click.echo("  You can manually email the invoice from:")
+                click.echo(f"  {pdf_path}")
+    else:
+        click.echo("💡 Tip: Add client email in config to enable quick email sending")
 
 
 @cli.command("list")
