@@ -130,7 +130,10 @@ def _prompt_client_info(existing=None):
     c = copy.deepcopy(existing or _DEFAULT_CLIENT)
     c["name"] = click.prompt("Client name or company", default=c.get("name") or "")
     c["contact"] = click.prompt("Contact name", default=c.get("contact") or "")
-    c["address"] = click.prompt("Client street address", default=c.get("address") or "")
+    c["address"] = click.prompt(
+        "Client street address (use \\n for separate lines, e.g., '123 Main St\\nPO Box 456')", 
+        default=c.get("address") or ""
+    )
     c["city"] = click.prompt("Client city", default=c.get("city") or "")
     c["state"] = click.prompt("Client state", default=c.get("state") or "")
     c["zip"] = click.prompt("Client ZIP code", default=c.get("zip") or "")
@@ -177,7 +180,8 @@ def _run_config_setup(existing=None):
         "Your name or company", default=config["payee"]["name"] or ""
     )
     config["payee"]["address"] = click.prompt(
-        "Street address", default=config["payee"]["address"] or ""
+        "Street address (use \\n for separate lines, e.g., '123 Main St\\nPO Box 456')", 
+        default=config["payee"]["address"] or ""
     )
     config["payee"]["city"] = click.prompt(
         "City", default=config["payee"]["city"] or ""
@@ -270,22 +274,29 @@ def _run_config_setup(existing=None):
 
 
 def get_next_invoice_number(csv_file):
-    """Return the next invoice number (last known + 1, starting at 1)."""
+    """Return the next invoice number in format YYYY-#### (last known + 1, starting at 1)."""
+    current_year = date.today().year
+    
     if not Path(csv_file).exists():
-        return 1
+        return f"{current_year}-0001"
 
     last_num = 0
     with open(csv_file, newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
             try:
-                num = int(row["invoice_number"])
-                if num > last_num:
-                    last_num = num
+                # Extract number from YYYY-#### format
+                invoice_str = row["invoice_number"]
+                if "-" in invoice_str:
+                    year_part, num_part = invoice_str.split("-", 1)
+                    if year_part == str(current_year):
+                        num = int(num_part)
+                        if num > last_num:
+                            last_num = num
             except (ValueError, KeyError):
                 pass
 
-    return last_num + 1
+    return f"{current_year}-{last_num + 1:04d}"
 
 
 # ---------------------------------------------------------------------------
@@ -343,7 +354,9 @@ _LABEL_W = _DESC_W + _HRS_W + _RATE_W  # 145 mm
 def _payee_lines(payee):
     lines = [payee.get("name", "")]
     if payee.get("address"):
-        lines.append(payee["address"])
+        # Split address into two lines if it contains "\n"
+        address_lines = payee["address"].split("\n")
+        lines.extend(address_lines)
     city = payee.get("city", "")
     state = payee.get("state", "")
     zip_ = payee.get("zip", "")
@@ -361,7 +374,9 @@ def _client_lines(client):
     if client.get("contact"):
         lines.append(client["contact"])
     if client.get("address"):
-        lines.append(client["address"])
+        # Split address into two lines if it contains "\n"
+        address_lines = client["address"].split("\n")
+        lines.extend(address_lines)
     city = client.get("city", "")
     state = client.get("state", "")
     zip_ = client.get("zip", "")
@@ -371,7 +386,7 @@ def _client_lines(client):
 
 
 def generate_pdf(invoice_number, invoice_date, config, line_items, output_path,
-                 client=None, payment_terms=""):
+                 client=None, payment_terms="", payment_description=None):
     """Render the PDF invoice and return the subtotal."""
     pdf = FPDF()
     pdf.set_margins(20, 20, 20)
@@ -388,20 +403,26 @@ def generate_pdf(invoice_number, invoice_date, config, line_items, output_path,
     logo_path = header_cfg.get("logo_path", "")
     title_text = header_cfg.get("title") or "INVOICE"
 
+    # Logo on left, title on right
     if logo_path and Path(logo_path).exists():
         # Render logo constrained to _LOGO_MAX_W × _LOGO_MAX_H mm, preserving aspect ratio.
-        pdf.image(logo_path, w=_LOGO_MAX_W, h=_LOGO_MAX_H, keep_aspect_ratio=True)
-        pdf.ln(2)
-
-    pdf.set_font("Helvetica", "B", 28)
-    pdf.cell(0, 14, title_text, align="R", new_x="LMARGIN", new_y="NEXT")
+        logo_y = pdf.get_y()
+        # Position logo at absolute left (x=10mm) for true left alignment
+        pdf.image(logo_path, x=10, w=_LOGO_MAX_W, h=_LOGO_MAX_H, keep_aspect_ratio=True)
+        # Position title on the right side of the page, aligned with logo top
+        pdf.set_font("Helvetica", "B", 28)
+        pdf.set_xy(pdf.w - pdf.r_margin - 80, logo_y)
+        pdf.cell(80, 14, title_text, align="R", new_x="LMARGIN", new_y="NEXT")
+    else:
+        pdf.set_font("Helvetica", "B", 28)
+        pdf.cell(0, 14, title_text, align="R", new_x="LMARGIN", new_y="NEXT")
 
     pdf.set_font("Helvetica", "", 10)
     pdf.cell(0, 5, f"Invoice #: {invoice_number:04d}", align="R", new_x="LMARGIN", new_y="NEXT")
     pdf.cell(0, 5, f"Date: {invoice_date}", align="R", new_x="LMARGIN", new_y="NEXT")
     if payment_terms:
         pdf.cell(0, 5, f"Payment Terms: {payment_terms}", align="R", new_x="LMARGIN", new_y="NEXT")
-    pdf.ln(6)
+    pdf.ln(27)  # Tripled again from 18 to 27 for maximum white space after header
 
     # ---- FROM / BILL TO ----
     col_w = 85
@@ -440,11 +461,21 @@ def generate_pdf(invoice_number, invoice_date, config, line_items, output_path,
 
     subtotal = 0.0
     shade = False
-    for item in line_items:
+    for i, item in enumerate(line_items):
+        # Add separator line between projects (except before first item)
+        if i > 0:
+            pdf.ln(1)  # Reduced from 2 to 1 for tighter spacing between projects
+            pdf.set_draw_color(200, 200, 200)
+            pdf.set_line_width(0.2)
+            pdf.line(pdf.l_margin, pdf.get_y(), pdf.w - pdf.r_margin, pdf.get_y())
+            pdf.ln(1)  # Reduced from 2 to 1 for tighter spacing
+        
         pdf.set_fill_color(245, 245, 245)
         row_y = pdf.get_y()
         # Use multi_cell so long descriptions wrap instead of overflowing.
-        pdf.multi_cell(_DESC_W, 7, item["description"], fill=shade, new_x="LMARGIN", new_y="NEXT")
+        # Replace newlines in description with spaces for single spacing within projects
+        description = item["description"].replace("\n", " ")
+        pdf.multi_cell(_DESC_W, 5, description, fill=shade, new_x="LMARGIN", new_y="NEXT")  # Reduced from 6 to 5 for even tighter spacing
         row_h = pdf.get_y() - row_y
         # Render the numeric columns at the same starting Y, spanning the full row height.
         pdf.set_xy(pdf.l_margin + _DESC_W, row_y)
@@ -489,19 +520,24 @@ def generate_pdf(invoice_number, invoice_date, config, line_items, output_path,
     pdf.cell(_AMT_W, 8, f"${subtotal:,.2f}", align="R", new_x="LMARGIN", new_y="NEXT")
 
     # ---- Payment info ----
-    if any(payment.get(k) for k in ("bank_name", "routing", "account", "description")):
+    # Use custom payment description if provided, otherwise fall back to config
+    payment_info = copy.deepcopy(payment)
+    if payment_description is not None:
+        payment_info["description"] = payment_description
+    
+    if any(payment_info.get(k) for k in ("bank_name", "routing", "account", "description")):
         pdf.ln(12)
         pdf.set_font("Helvetica", "B", 10)
         pdf.cell(0, 6, "Payment Information:", new_x="LMARGIN", new_y="NEXT")
         pdf.set_font("Helvetica", "", 10)
-        if payment.get("description"):
-            pdf.cell(0, 5, payment["description"], new_x="LMARGIN", new_y="NEXT")
-        if payment.get("bank_name"):
-            pdf.cell(0, 5, f"Bank: {payment['bank_name']}", new_x="LMARGIN", new_y="NEXT")
-        if payment.get("routing"):
-            pdf.cell(0, 5, f"Routing #: {payment['routing']}", new_x="LMARGIN", new_y="NEXT")
-        if payment.get("account"):
-            pdf.cell(0, 5, f"Account #: {payment['account']}", new_x="LMARGIN", new_y="NEXT")
+        if payment_info.get("description"):
+            pdf.cell(0, 5, payment_info["description"], new_x="LMARGIN", new_y="NEXT")
+        if payment_info.get("bank_name"):
+            pdf.cell(0, 5, f"Bank: {payment_info['bank_name']}", new_x="LMARGIN", new_y="NEXT")
+        if payment_info.get("routing"):
+            pdf.cell(0, 5, f"Routing #: {payment_info['routing']}", new_x="LMARGIN", new_y="NEXT")
+        if payment_info.get("account"):
+            pdf.cell(0, 5, f"Account #: {payment_info['account']}", new_x="LMARGIN", new_y="NEXT")
 
     pdf.output(output_path)
     return subtotal
@@ -537,7 +573,7 @@ def save_to_csv(invoice_number, invoice_date, config, line_items, total, pdf_fil
             writer.writeheader()
         writer.writerow(
             {
-                "invoice_number": f"{invoice_number:04d}",
+                "invoice_number": str(invoice_number),
                 "date": invoice_date,
                 "payee_name": config.get("payee", {}).get("name", ""),
                 "payer_name": client.get("name", ""),
@@ -606,7 +642,41 @@ def cmd_new(invoice_date):
     if invoice_date is None:
         invoice_date = date.today().isoformat()
 
-    click.echo(f"\nCreating Invoice #{invoice_number:04d}  ({invoice_date})")
+    # Allow user to customize invoice number and date
+    click.echo(f"\n--- Invoice Setup ---")
+    click.echo(f"Default: Invoice #{invoice_number:04d} dated {invoice_date}")
+    
+    # Option to change invoice number
+    custom_number = click.prompt("Invoice number (press Enter to use default)", default=invoice_number, type=int, show_default=False)
+    if custom_number != invoice_number:
+        invoice_number = custom_number
+        click.echo(f"✓ Using custom invoice number: {invoice_number}")
+    
+    # Option to change invoice date
+    custom_date = click.prompt("Invoice date (YYYY-MM-DD, press Enter for today)", default=invoice_date, show_default=False)
+    try:
+        # Validate the date format
+        date.fromisoformat(custom_date)
+        invoice_date = custom_date
+        if invoice_date != date.today().isoformat():
+            click.echo(f"✓ Using custom date: {invoice_date}")
+    except ValueError:
+        click.echo("⚠ Invalid date format. Using today's date.")
+        invoice_date = date.today().isoformat()
+
+    # Option to change payment description (per-invoice basis)
+    default_payment_desc = config_data.get("payment", {}).get("description", "")
+    payment_description = click.prompt(
+        "Payment description (press Enter to use default)", 
+        default=default_payment_desc, 
+        show_default=False
+    )
+    if payment_description and payment_description != default_payment_desc:
+        click.echo(f"✓ Using custom payment description")
+    elif not payment_description:
+        payment_description = default_payment_desc
+
+    click.echo(f"\n--- Creating Invoice #{invoice_number} dated {invoice_date} ---")
 
     # ---- Client selection ----
     clients = config_data.get("clients", [])
@@ -641,19 +711,21 @@ def cmd_new(invoice_date):
     line_items = get_line_items()
 
     Path(invoices_dir).mkdir(parents=True, exist_ok=True)
-    pdf_filename = f"invoice_{invoice_number:04d}_{invoice_date}.pdf"
+    # Use ClientName_Invoice_InvoiceNumber.pdf format
+    client_name = client.get("name", "Client").replace(" ", "_")
+    pdf_filename = f"{client_name}_Invoice_{invoice_number}.pdf"
     pdf_path = str(Path(invoices_dir) / pdf_filename)
 
     total = generate_pdf(
         invoice_number, invoice_date, config_data, line_items, pdf_path,
-        client=client, payment_terms=payment_terms,
+        client=client, payment_terms=payment_terms, payment_description=payment_description,
     )
     csv_used = save_to_csv(
         invoice_number, invoice_date, config_data, line_items, total, pdf_path,
         client=client,
     )
 
-    click.echo(f"\n✓  Invoice #{invoice_number:04d} saved to: {pdf_path}")
+    click.echo(f"\n✓  Invoice #{invoice_number} saved to: {pdf_path}")
     click.echo(f"✓  Total due: ${total:,.2f}")
     click.echo(f"✓  CSV log updated: {csv_used}")
 
