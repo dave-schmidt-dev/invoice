@@ -4,8 +4,9 @@ A command-line tool for generating professional PDF invoices and tracking them i
 
 ## Features
 
-- Stores payee (you) and payer (client) info in `~/.invoice_config.json` — found from any working directory
-- **Configurable data directory** — choose where the CSV log and PDFs are stored (defaults to `~/.invoice/`)
+- Config lives in `~/.invoice_config.json` — works from **any directory** in your terminal
+- Stores payee (you) and payer (client) info once; reused for every invoice
+- CSV log and PDF output paths are **configurable** — point them anywhere on your machine
 - Prompts for multiple line items per invoice (description, hours, and pay rate)
 - Generates a clean, professional PDF invoice
 - Appends every invoice to a CSV log with an auto-incremented invoice number
@@ -20,46 +21,25 @@ A command-line tool for generating professional PDF invoices and tracking them i
 pip install -r requirements.txt
 ```
 
-## Installation (run from anywhere in the terminal)
-
-Make the script executable and create a symlink (or copy) somewhere on your `PATH`:
-
-```bash
-chmod +x invoice.py
-
-# Option A — symlink into /usr/local/bin (macOS/Linux, requires sudo)
-sudo ln -sf "$(pwd)/invoice.py" /usr/local/bin/invoice
-
-# Option B — copy into ~/bin (no sudo needed; add ~/bin to PATH if not already there)
-mkdir -p ~/bin
-cp invoice.py ~/bin/invoice
-# Add to ~/.zshrc or ~/.bashrc if ~/bin is not on PATH:
-#   export PATH="$HOME/bin:$PATH"
-```
-
-After this you can run `invoice` from any directory.
-
 ## Quick Start
 
-### 1. Configure payee, payer & data directory
+### 1. Configure payee & payer information
 
 Run the config wizard once (or any time you need to update your info):
 
 ```bash
-invoice config
+python invoice.py config
 ```
 
-You will be prompted for payee/payer details and — importantly — the **data directory**
-where the CSV log and generated PDFs will be stored.  The default is `~/.invoice/` so
-the same invoice history is accessible no matter which directory you are in.
+This saves your information to `~/.invoice_config.json` so the tool works from any directory.  
+The wizard will also ask where you want your CSV log and PDF output stored (defaults to `~/invoices/`).
 
-Your configuration is saved to `~/.invoice_config.json`.  
 See `config.example.json` for the expected structure.
 
 ### 2. Create a new invoice
 
 ```bash
-invoice new
+python invoice.py new
 ```
 
 You will be prompted to enter one or more line items:
@@ -82,33 +62,64 @@ Description (blank to finish): SEO audit
 
 Description (blank to finish):
 
-✓  Invoice #0001 saved to: /Users/you/.invoice/invoices/invoice_0001_2024-05-01.pdf
+✓  Invoice #0001 saved to: ~/invoices/invoice_0001_2024-05-01.pdf
 ✓  Total due: $2,175.00
-✓  CSV log updated: /Users/you/.invoice/invoices.csv
+✓  CSV log updated: ~/invoices/invoices.csv
 ```
 
 ### 3. List all invoices
 
 ```bash
-invoice list
+python invoice.py list
 ```
 
 ```
 #       Date          Payer                           Total   PDF
 --------------------------------------------------------------------------------
-0001    2024-05-01    Acme Corp                    $2175.00   /Users/you/.invoice/invoices/invoice_0001_2024-05-01.pdf
+0001    2024-05-01    Acme Corp                    $2175.00   ~/invoices/invoice_0001_2024-05-01.pdf
 ```
 
-## File layout
+## Running from anywhere
 
-| Path | Contents |
-|---|---|
-| `~/.invoice_config.json` | Payee, payer, banking info, and `data_dir` setting |
-| `~/.invoice/invoices.csv` | Ledger: number, date, parties, line items, total, PDF path *(default location)* |
-| `~/.invoice/invoices/` | Generated PDF files *(default location)* |
+Because the config is stored in your home directory, you can run the tool from any folder:
 
-The `data_dir` value in `~/.invoice_config.json` controls where the CSV and PDFs live.
-You can set it to any absolute path (e.g. `~/Documents/Invoices`) during `invoice config`.
+```bash
+# From a project directory, a temp folder, anywhere — same invoice history every time
+cd /some/other/directory
+python /path/to/invoice.py new
+```
+
+Or add a shell alias for convenience:
+
+```bash
+alias invoice="python /path/to/invoice.py"
+```
+
+Then simply run `invoice new`, `invoice list`, etc. from any location.
+
+## File Structure
+
+```
+invoice.py            # CLI entry point
+requirements.txt      # Python dependencies
+config.example.json   # Example config structure (safe to commit)
+~/.invoice_config.json   # Your real config — stored in home dir, never in the repo
+~/invoices/           # Default output directory (configurable)
+  invoices.csv        # CSV log of all invoices
+  invoice_0001_*.pdf  # Generated PDF files
+```
+
+## Configuring storage paths
+
+During `invoice.py config` you are asked:
+
+```
+=== Storage Paths ===
+Invoice CSV log path [~/invoices/invoices.csv]:
+PDF output directory [~/invoices]:
+```
+
+You can point these anywhere — a Dropbox folder, an iCloud Drive directory, etc. — so your invoice history is automatically backed up.
 
 ## CSV Log Format
 
@@ -120,7 +131,7 @@ You can set it to any absolute path (e.g. `~/Documents/Invoices`) during `invoic
 | `payer_name` | Client name / company |
 | `line_items` | Semicolon-separated summary of line items |
 | `total` | Total amount due |
-| `pdf_file` | Absolute path to the generated PDF |
+| `pdf_file` | Path to the generated PDF |
 
 ## License
 

@@ -59,7 +59,7 @@ coverage.xml
 htmlcov/
 *.log
 
-# Invoice data files (contain personal/financial information — stored in ~/.invoice/ by default)
+# Invoice data files (contain personal/financial information)
 invoice_config.json
 invoices.csv
 invoices/

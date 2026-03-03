@@ -1,5 +1,4 @@
 {
-  "data_dir": "~/.invoice",
   "payee": {
     "name": "Jane Doe",
     "address": "123 Freelancer Lane",
@@ -21,5 +20,9 @@
     "bank_name": "First National Bank",
     "routing": "021000021",
     "account": "1234567890"
+  },
+  "storage": {
+    "csv_file": "/Users/janedoe/invoices/invoices.csv",
+    "invoices_dir": "/Users/janedoe/invoices"
   }
 }
