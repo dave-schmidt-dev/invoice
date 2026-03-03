@@ -61,6 +61,7 @@ htmlcov/
 
 # Invoice data files (contain personal/financial information)
 invoice_config.json
+.invoice_config.json
 invoices.csv
 invoices/
 

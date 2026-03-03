@@ -12,6 +12,8 @@ Usage:
 import copy
 import csv
 import json
+import os
+import re
 from datetime import date
 from pathlib import Path
 
@@ -77,6 +79,44 @@ DEFAULT_CONFIG = {
 }
 
 # ---------------------------------------------------------------------------
+# Security helpers
+# ---------------------------------------------------------------------------
+
+# Characters that spreadsheet applications interpret as formula prefixes.
+# Includes '=', '+', '-', '@' (formula starters), as well as tab and
+# carriage-return which can be used to inject additional CSV rows/fields.
+_CSV_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _sanitize_csv_field(value):
+    """Prevent CSV injection by prefixing formula-triggering cell values.
+
+    Spreadsheet applications (Excel, LibreOffice Calc) treat cells that begin
+    with '=', '+', '-', '@', a tab, or a carriage-return as formulas or
+    multi-row data, which can be exploited when a generated CSV is opened by
+    the recipient.  Prefixing with a single quote causes the value to be
+    treated as plain text.
+    """
+    if isinstance(value, str) and value.startswith(_CSV_FORMULA_PREFIXES):
+        return "'" + value
+    return value
+
+
+def _safe_filename(name):
+    """Return a filesystem-safe version of *name* for use in file names.
+
+    Strips or replaces characters that could be used for path traversal
+    (e.g. '/', '..') or that are otherwise illegal in common filesystems.
+    """
+    # Replace anything that isn't a word character or hyphen (including spaces).
+    safe = re.sub(r"[^\w-]", "_", name)
+    # Collapse runs of underscores/hyphens introduced by substitution.
+    safe = re.sub(r"[_-]{2,}", "_", safe)
+    safe = safe.strip("_.-")
+    return safe or "Client"
+
+
+# ---------------------------------------------------------------------------
 # Config helpers
 # ---------------------------------------------------------------------------
 
@@ -120,8 +160,19 @@ def load_config():
 
 
 def save_config(config):
-    """Save config to ~/.invoice_config.json."""
-    with open(CONFIG_FILE, "w") as f:
+    """Save config to ~/.invoice_config.json with owner-only permissions.
+
+    The config contains sensitive financial data (bank account/routing numbers)
+    and personal information, so the file is written with 0o600 permissions
+    (owner read/write only) to prevent other users on the system from reading it.
+    os.fchmod is used on the open file descriptor to set permissions without
+    a path-based TOCTOU race condition.
+    """
+    # os.open with O_CREAT sets the initial mode on new files, bypassing umask.
+    fd = os.open(str(CONFIG_FILE), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        # fchmod operates on the fd, not the path, avoiding any symlink race.
+        os.fchmod(f.fileno(), 0o600)
         json.dump(config, f, indent=2)
 
 
@@ -575,11 +626,11 @@ def save_to_csv(invoice_number, invoice_date, config, line_items, total, pdf_fil
             {
                 "invoice_number": str(invoice_number),
                 "date": invoice_date,
-                "payee_name": config.get("payee", {}).get("name", ""),
-                "payer_name": client.get("name", ""),
-                "line_items": items_str,
+                "payee_name": _sanitize_csv_field(config.get("payee", {}).get("name", "")),
+                "payer_name": _sanitize_csv_field(client.get("name", "")),
+                "line_items": _sanitize_csv_field(items_str),
                 "total": f"{total:.2f}",
-                "pdf_file": pdf_file,
+                "pdf_file": _sanitize_csv_field(pdf_file),
             }
         )
     return csv_file
@@ -712,7 +763,7 @@ def cmd_new(invoice_date):
 
     Path(invoices_dir).mkdir(parents=True, exist_ok=True)
     # Use ClientName_Invoice_InvoiceNumber.pdf format
-    client_name = client.get("name", "Client").replace(" ", "_")
+    client_name = _safe_filename(client.get("name", "Client"))
     pdf_filename = f"{client_name}_Invoice_{invoice_number}.pdf"
     pdf_path = str(Path(invoices_dir) / pdf_filename)
 
