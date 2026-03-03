@@ -8,3 +8,4 @@
 - Added sanity protections: spreadsheet-formula-safe CSV fields, literal `\\n` address splitting support, and defensive config parsing with clear error messages.
 - Fixed `invoice-wrapper` so it reliably invokes `invoice.py` both inside and outside an active virtualenv.
 - Added lightweight regression tests for key safety helpers in `tests/test_invoice_safety.py`.
+- Rewrote `README.md` for accuracy and maintainability: updated command usage, removed obsolete workaround guidance, and corrected CSV format docs to include `status`.
