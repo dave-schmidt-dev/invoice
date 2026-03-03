@@ -39,6 +39,7 @@ CSV_HEADERS = [
     "line_items",
     "total",
     "pdf_file",
+    "status",
 ]
 
 _DEFAULT_CLIENT = {
@@ -581,6 +582,7 @@ def save_to_csv(invoice_number, invoice_date, config, line_items, total, pdf_fil
                 "line_items": items_str,
                 "total": f"{total:.2f}",
                 "pdf_file": pdf_file,
+                "status": "Draft",  # Default status for new invoices
             }
         )
     return csv_file
@@ -814,6 +816,88 @@ def cmd_list():
             f"{row['date']:<14}"
             f"{row['payer_name']:<28}"
             f"${row['total']:>9}   "
+            f"{row['pdf_file']}"
+        )
+    click.echo()
+
+
+@cli.command("status")
+@click.argument("invoice_number")
+@click.argument("status", type=click.Choice(["Draft", "Sent", "Paid", "Overdue"], case_sensitive=False))
+def cmd_status(invoice_number, status):
+    """Update the status of an invoice."""
+    config_data = load_config()
+    csv_file = config_data.get("storage", {}).get("csv_file") or str(_DEFAULT_CSV)
+    
+    if not Path(csv_file).exists():
+        click.echo(f"No invoices found. CSV file not found: {csv_file}")
+        return
+    
+    # Read all rows
+    with open(csv_file, newline="") as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+    
+    # Find the invoice
+    found = False
+    for row in rows:
+        if row['invoice_number'] == invoice_number:
+            row['status'] = status.capitalize()
+            found = True
+            break
+    
+    if not found:
+        click.echo(f"Invoice #{invoice_number} not found.")
+        return
+    
+    # Write back to CSV
+    with open(csv_file, 'w', newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=CSV_HEADERS)
+        writer.writeheader()
+        writer.writerows(rows)
+    
+    click.echo(f"✓ Invoice #{invoice_number} status updated to: {status.capitalize()}")
+
+
+@cli.command("list")
+@click.option("--status", default="all",
+             type=click.Choice(["all", "Draft", "Sent", "Paid", "Overdue"], case_sensitive=False),
+             help="Filter by invoice status")
+def cmd_list(status):
+    """List all previously generated invoices."""
+    config_data = load_config()
+    csv_file = config_data.get("storage", {}).get("csv_file") or str(_DEFAULT_CSV)
+
+    if not Path(csv_file).exists():
+        click.echo("No invoices found. Run 'invoice.py new' to create one.")
+        return
+
+    with open(csv_file, newline="") as f:
+        rows = list(csv.DictReader(f))
+
+    if not rows:
+        click.echo("No invoices found.")
+        return
+
+    # Filter by status if specified
+    if status != "all":
+        rows = [row for row in rows if row.get("status") == status.capitalize()]
+        if not rows:
+            click.echo(f"No invoices found with status: {status.capitalize()}")
+            return
+
+    # Header
+    click.echo(
+        f"\n{'#':<8}{'Date':<14}{'Payer':<28}{'Total':>10}{'Status':<12}   PDF"
+    )
+    click.echo("-" * 90)
+    for row in rows:
+        click.echo(
+            f"{row['invoice_number']:<8}"
+            f"{row['date']:<14}"
+            f"{row['payer_name']:<28}"
+            f"${row['total']:>9}   "
+            f"{row.get('status', 'Draft'):<12}"
             f"{row['pdf_file']}"
         )
     click.echo()
