@@ -18,9 +18,10 @@ from pathlib import Path
 import click
 from fpdf import FPDF
 
-CONFIG_FILE = "invoice_config.json"
-CSV_FILE = "invoices.csv"
-INVOICES_DIR = "invoices"
+CONFIG_FILE = Path.home() / ".invoice_config.json"
+# Defaults used when no config exists yet; actual paths live inside the config.
+_DEFAULT_CSV = Path.home() / "invoices" / "invoices.csv"
+_DEFAULT_INVOICES_DIR = Path.home() / "invoices"
 
 CSV_HEADERS = [
     "invoice_number",
@@ -55,6 +56,10 @@ DEFAULT_CONFIG = {
         "routing": "",
         "account": "",
     },
+    "storage": {
+        "csv_file": str(_DEFAULT_CSV),
+        "invoices_dir": str(_DEFAULT_INVOICES_DIR),
+    },
 }
 
 # ---------------------------------------------------------------------------
@@ -63,22 +68,31 @@ DEFAULT_CONFIG = {
 
 
 def load_config():
-    """Load config from file, prompting for setup if it doesn't exist."""
-    if not Path(CONFIG_FILE).exists():
+    """Load config from ~/.invoice_config.json, prompting for setup if needed."""
+    if not CONFIG_FILE.exists():
         click.echo(f"Config file '{CONFIG_FILE}' not found.")
         if click.confirm("Would you like to set up your config now?"):
             return _run_config_setup()
         click.echo(
-            f"Tip: run 'python invoice.py config' at any time to configure payee/payer info."
+            "Tip: run 'invoice.py config' at any time to configure payee/payer info and storage paths."
         )
         return copy.deepcopy(DEFAULT_CONFIG)
 
     with open(CONFIG_FILE) as f:
-        return json.load(f)
+        cfg = json.load(f)
+
+    # Back-fill the storage section for configs created before this field existed.
+    cfg.setdefault("storage", {})
+    cfg["storage"].setdefault("csv_file", str(_DEFAULT_CSV))
+    cfg["storage"].setdefault("invoices_dir", str(_DEFAULT_INVOICES_DIR))
+    # Expand ~ in paths in case the user edited the config file manually.
+    cfg["storage"]["csv_file"] = str(Path(cfg["storage"]["csv_file"]).expanduser())
+    cfg["storage"]["invoices_dir"] = str(Path(cfg["storage"]["invoices_dir"]).expanduser())
+    return cfg
 
 
 def save_config(config):
-    """Save config to disk."""
+    """Save config to ~/.invoice_config.json."""
     with open(CONFIG_FILE, "w") as f:
         json.dump(config, f, indent=2)
 
@@ -141,6 +155,16 @@ def _run_config_setup(existing=None):
         "Account number", default=config["payment"]["account"] or ""
     )
 
+    click.echo("\n=== Storage Paths ===")
+    config["storage"]["csv_file"] = click.prompt(
+        "Invoice CSV log path",
+        default=config["storage"].get("csv_file") or str(_DEFAULT_CSV),
+    )
+    config["storage"]["invoices_dir"] = click.prompt(
+        "PDF output directory",
+        default=config["storage"].get("invoices_dir") or str(_DEFAULT_INVOICES_DIR),
+    )
+
     save_config(config)
     click.echo(f"\nConfig saved to '{CONFIG_FILE}'.")
     return config
@@ -151,13 +175,13 @@ def _run_config_setup(existing=None):
 # ---------------------------------------------------------------------------
 
 
-def get_next_invoice_number():
+def get_next_invoice_number(csv_file):
     """Return the next invoice number (last known + 1, starting at 1)."""
-    if not Path(CSV_FILE).exists():
+    if not Path(csv_file).exists():
         return 1
 
     last_num = 0
-    with open(CSV_FILE, newline="") as f:
+    with open(csv_file, newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
             try:
@@ -372,15 +396,21 @@ def generate_pdf(invoice_number, invoice_date, config, line_items, output_path):
 
 
 def save_to_csv(invoice_number, invoice_date, config, line_items, total, pdf_file):
-    """Append the invoice summary to the CSV log."""
-    file_exists = Path(CSV_FILE).exists()
+    """Append the invoice summary to the CSV log.
+
+    Returns the path of the CSV file that was written.
+    """
+    csv_file = config.get("storage", {}).get("csv_file") or str(_DEFAULT_CSV)
+    # Ensure parent directory exists.
+    Path(csv_file).parent.mkdir(parents=True, exist_ok=True)
+    file_exists = Path(csv_file).exists()
 
     items_str = "; ".join(
         f"{item['description']} ({item['hours']} hrs @ ${item['rate']:.2f}/hr)"
         for item in line_items
     )
 
-    with open(CSV_FILE, "a", newline="") as f:
+    with open(csv_file, "a", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=CSV_HEADERS)
         if not file_exists:
             writer.writeheader()
@@ -395,6 +425,7 @@ def save_to_csv(invoice_number, invoice_date, config, line_items, total, pdf_fil
                 "pdf_file": pdf_file,
             }
         )
+    return csv_file
 
 
 # ---------------------------------------------------------------------------
@@ -411,9 +442,16 @@ def cli():
 def cmd_config():
     """Set up or update payee, payer, and payment configuration."""
     existing = None
-    if Path(CONFIG_FILE).exists():
+    if CONFIG_FILE.exists():
         with open(CONFIG_FILE) as f:
             existing = json.load(f)
+        # Back-fill storage section for older configs.
+        existing.setdefault("storage", {})
+        existing["storage"].setdefault("csv_file", str(_DEFAULT_CSV))
+        existing["storage"].setdefault("invoices_dir", str(_DEFAULT_INVOICES_DIR))
+        # Expand ~ in case the user edited the file manually.
+        existing["storage"]["csv_file"] = str(Path(existing["storage"]["csv_file"]).expanduser())
+        existing["storage"]["invoices_dir"] = str(Path(existing["storage"]["invoices_dir"]).expanduser())
         click.echo(f"Existing config found in '{CONFIG_FILE}'.")
         if not click.confirm("Update it?"):
             return
@@ -431,7 +469,10 @@ def cmd_new(invoice_date):
     """Create a new invoice interactively."""
     config_data = load_config()
 
-    invoice_number = get_next_invoice_number()
+    csv_file = config_data.get("storage", {}).get("csv_file") or str(_DEFAULT_CSV)
+    invoices_dir = config_data.get("storage", {}).get("invoices_dir") or str(_DEFAULT_INVOICES_DIR)
+
+    invoice_number = get_next_invoice_number(csv_file)
     if invoice_date is None:
         invoice_date = date.today().isoformat()
 
@@ -439,26 +480,29 @@ def cmd_new(invoice_date):
 
     line_items = get_line_items()
 
-    Path(INVOICES_DIR).mkdir(exist_ok=True)
+    Path(invoices_dir).mkdir(parents=True, exist_ok=True)
     pdf_filename = f"invoice_{invoice_number:04d}_{invoice_date}.pdf"
-    pdf_path = str(Path(INVOICES_DIR) / pdf_filename)
+    pdf_path = str(Path(invoices_dir) / pdf_filename)
 
     total = generate_pdf(invoice_number, invoice_date, config_data, line_items, pdf_path)
-    save_to_csv(invoice_number, invoice_date, config_data, line_items, total, pdf_path)
+    csv_used = save_to_csv(invoice_number, invoice_date, config_data, line_items, total, pdf_path)
 
     click.echo(f"\n✓  Invoice #{invoice_number:04d} saved to: {pdf_path}")
     click.echo(f"✓  Total due: ${total:,.2f}")
-    click.echo(f"✓  CSV log updated: {CSV_FILE}")
+    click.echo(f"✓  CSV log updated: {csv_used}")
 
 
 @cli.command("list")
 def cmd_list():
     """List all previously generated invoices."""
-    if not Path(CSV_FILE).exists():
-        click.echo("No invoices found. Run 'python invoice.py new' to create one.")
+    config_data = load_config()
+    csv_file = config_data.get("storage", {}).get("csv_file") or str(_DEFAULT_CSV)
+
+    if not Path(csv_file).exists():
+        click.echo("No invoices found. Run 'invoice.py new' to create one.")
         return
 
-    with open(CSV_FILE, newline="") as f:
+    with open(csv_file, newline="") as f:
         rows = list(csv.DictReader(f))
 
     if not rows:
