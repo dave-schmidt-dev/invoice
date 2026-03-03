@@ -650,7 +650,7 @@ def cmd_new(invoice_date):
     click.echo(f"Default: Invoice #{invoice_number} dated {invoice_date}")
     
     # Option to change invoice number
-    custom_number = click.prompt("Invoice number (press Enter to use default)", default=invoice_number, type=int, show_default=False)
+    custom_number = click.prompt("Invoice number (press Enter to use default)", default=invoice_number, show_default=False)
     if custom_number != invoice_number:
         invoice_number = custom_number
         click.echo(f"✓ Using custom invoice number: {invoice_number}")
