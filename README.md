@@ -193,13 +193,12 @@ You can point these anywhere — a Dropbox folder, an iCloud Drive directory, et
 
 ### Current Limitations
 
-- **Email attachments on macOS**: PDF must be manually attached (AppleScript limitation)
 - **Windows/Linux email**: Falls back to mailto: link (manual attachment needed)
 - **Status values**: Only Draft/Sent/Paid/Overdue supported (by design)
 
 ### Workarounds
 
-1. **Email attachments**: One-click attach in Apple Mail after email opens
+1. **macOS email**: PDF attaches automatically via AppleScript ✅
 2. **Long PDF paths**: Dynamic column width handles this automatically
 3. **Virtual environment**: Use the `invoice` command (automatic activation)
 
