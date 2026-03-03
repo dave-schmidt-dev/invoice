@@ -73,8 +73,8 @@ Payment description (press Enter to use default): Please pay via ACH or check
 --- Creating Invoice #2026-0001 dated 2026-03-03 ---
 
 Select a client:
-  1. CipherBlade LLC
-  2. Meridian Capital Partners
+  1. Acme Corporation
+  2. Globex International
 Client number: 1
 
 Payment Terms:
@@ -99,7 +99,7 @@ Description (blank to finish): SEO audit
 
 Description (blank to finish):
 
-✓  Invoice #2026-0001 saved to: ~/invoices/CipherBlade_LLC_Invoice_2026-0001.pdf
+✓  Invoice #2026-0001 saved to: ~/invoices/Acme_Corporation_Invoice_2026-0001.pdf
 ✓  Total due: $2,175.00
 ✓  CSV log updated: ~/invoices/invoices.csv
 ```
@@ -164,11 +164,11 @@ You can point these anywhere — a Dropbox folder, an iCloud Drive directory, et
 |--------|-------------|---------|
 | `invoice_number` | Year-based invoice number | `2026-0001` |
 | `date` | ISO-8601 date the invoice was created | `2026-03-03` |
-| `payee_name` | Your name / company | `CipherBlade LLC` |
-| `payer_name` | Client name / company | `Meridian Capital Partners` |
+| `payee_name` | Your name / company | `Acme Corporation` |
+| `payer_name` | Client name / company | `Globex International` |
 | `line_items` | Semicolon-separated summary of line items | `Website redesign (12 hrs @ $150.00/hr); SEO audit (3 hrs @ $125.00/hr)` |
 | `total` | Total amount due | `$2175.00` |
-| `pdf_file` | Path to the generated PDF | `/Users/you/invoices/CipherBlade_LLC_Invoice_2026-0001.pdf` |
+| `pdf_file` | Path to the generated PDF | `/Users/you/invoices/Acme_Corporation_Invoice_2026-0001.pdf` |
 
 ## License
 
