@@ -745,23 +745,38 @@ def cmd_new(invoice_date):
                 encoded_subject = urllib.parse.quote(subject)
                 encoded_body = urllib.parse.quote(body)
                 
-                # Create mailto: link with attachment
+                # Create mailto: link
                 mailto_url = f"mailto:{client['email']}?subject={encoded_subject}&body={encoded_body}"
                 
                 # Open default mail client
                 if sys.platform == 'darwin':  # macOS
-                    subprocess.run(['open', mailto_url])
-                    # Give mail client time to open, then add attachment
-                    subprocess.run(['open', '-a', 'Mail', pdf_path])
+                    # Use AppleScript to create email with attachment
+                    script = f'''
+                    tell application "Mail"
+                        set newMessage to make new outgoing message with properties {{subject:"{subject}", content:"{body}"}}
+                        tell newMessage
+                            make new to recipient at end of to recipients with properties {{address:"{client['email']}"}}
+                            tell content
+                                make new attachment with properties {{file name:"{pdf_path}"}}
+                            end tell
+                            activate
+                        end tell
+                    end tell
+                    '''
+                    subprocess.run(['osascript', '-e', script])
+                    click.echo("✓ Apple Mail opened with invoice attached!")
+                    click.echo("  - Email is ready to send")
+                    click.echo("  - Review and click Send!")
+                    
                 elif sys.platform == 'win32':  # Windows
                     subprocess.run(['start', mailto_url], shell=True)
-                    # Windows will handle attachment separately
+                    click.echo("✓ Email client opened with invoice ready to send")
+                    click.echo(f"  - Manually attach: {pdf_path}")
+                    
                 else:  # Linux
                     subprocess.run(['xdg-open', mailto_url])
-                    
-                click.echo("✓ Email client opened with invoice ready to send")
-                click.echo("  - Review the email and attach the PDF manually if needed")
-                click.echo("  - Press Send when ready!")
+                    click.echo("✓ Email client opened with invoice ready to send")
+                    click.echo(f"  - Manually attach: {pdf_path}")
                 
             except Exception as e:
                 click.echo(f"⚠ Could not open email client: {e}")
