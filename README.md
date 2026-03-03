@@ -24,6 +24,10 @@ Generate clean and simple PDF invoices with a simple CLI interface.
 - **💬 Per-invoice payment descriptions**: Customize payment instructions for each invoice
 - **📁 Client-based filenames**: `ClientName_Invoice_InvoiceNumber.pdf` format
 - **🎨 Enhanced PDF formatting**: Better spacing, alignment, and visual hierarchy
+- **✉️ Email integration**: Automatic Apple Mail opening with pre-filled emails
+- **📊 Status tracking**: Track invoice status (Draft/Sent/Paid/Overdue)
+- **🔄 Automatic venv**: No manual virtual environment activation needed
+- **🐛 Bug fixes**: All formatting and alignment issues resolved
 
 ## Requirements
 
@@ -184,6 +188,20 @@ You can point these anywhere — a Dropbox folder, an iCloud Drive directory, et
 | `line_items` | Semicolon-separated summary of line items | `Website redesign (12 hrs @ $150.00/hr); SEO audit (3 hrs @ $125.00/hr)` |
 | `total` | Total amount due | `$2175.00` |
 | `pdf_file` | Path to the generated PDF | `/Users/you/invoices/Acme_Corporation_Invoice_2026-0001.pdf` |
+
+## Known Issues & Limitations
+
+### Current Limitations
+
+- **Email attachments on macOS**: PDF must be manually attached (AppleScript limitation)
+- **Windows/Linux email**: Falls back to mailto: link (manual attachment needed)
+- **Status values**: Only Draft/Sent/Paid/Overdue supported (by design)
+
+### Workarounds
+
+1. **Email attachments**: One-click attach in Apple Mail after email opens
+2. **Long PDF paths**: Dynamic column width handles this automatically
+3. **Virtual environment**: Use the `invoice` command (automatic activation)
 
 ## License
 
