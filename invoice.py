@@ -11,9 +11,17 @@ Usage:
 
 import copy
 import csv
+import hashlib
 import json
+import os
+import re
+import subprocess
 import sys
+import tempfile
+import urllib.parse
+from contextlib import contextmanager
 from datetime import date
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 
 import click
@@ -30,6 +38,15 @@ _LOGO_MAX_H = 25
 _VALID_LOGO_EXTS = {".png", ".jpg", ".jpeg"}
 
 PAYMENT_TERMS_CHOICES = ["Net 15", "Net 30", "Upon Receipt", "Custom"]
+MONEY_PRECISION = Decimal("0.01")
+CSV_FORMULA_PREFIXES = ("=", "+", "-", "@")
+SAFE_FILENAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
+INVOICE_NUMBER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows fallback
+    fcntl = None
 
 CSV_HEADERS = [
     "invoice_number",
@@ -83,6 +100,191 @@ DEFAULT_CONFIG = {
 # ---------------------------------------------------------------------------
 
 
+def _to_decimal(value, field_name):
+    """Convert a user-supplied numeric value into Decimal."""
+    if isinstance(value, Decimal):
+        return value
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError) as exc:
+        raise click.ClickException(f"Invalid numeric value for {field_name}: {value!r}") from exc
+
+
+def _to_money_decimal(value, field_name="amount"):
+    """Convert a value to a currency Decimal rounded to cents."""
+    return _to_decimal(value, field_name).quantize(MONEY_PRECISION, rounding=ROUND_HALF_UP)
+
+
+def _prompt_decimal(prompt_text, field_name, minimum):
+    """Prompt until a valid Decimal >= minimum is provided."""
+    while True:
+        raw_value = click.prompt(prompt_text, type=str).strip()
+        try:
+            value = _to_decimal(raw_value, field_name)
+        except click.ClickException:
+            click.echo(f"Invalid {field_name.lower()}. Enter a numeric value.")
+            continue
+        if value < minimum:
+            click.echo(f"{field_name} must be at least {minimum}.")
+            continue
+        return value
+
+
+def _split_address_lines(address):
+    """Split an address into printable lines; supports literal '\\n' input."""
+    if not address:
+        return []
+    normalized = str(address).replace("\\n", "\n")
+    return [line.strip() for line in normalized.splitlines() if line.strip()]
+
+
+def _sanitize_filename_component(value, fallback):
+    """Sanitize filename components to prevent traversal and invalid names."""
+    cleaned = SAFE_FILENAME_RE.sub("_", str(value or "").strip())
+    cleaned = cleaned.strip("._")
+    if not cleaned:
+        cleaned = fallback
+    return cleaned
+
+
+def _validate_invoice_number(value):
+    """Validate invoice number format for portability and safety."""
+    candidate = str(value or "").strip()
+    if not candidate:
+        raise click.ClickException("Invoice number cannot be blank.")
+    if not INVOICE_NUMBER_RE.fullmatch(candidate):
+        raise click.ClickException(
+            "Invoice number may only include letters, numbers, '.', '_' or '-' and must start with a letter/number."
+        )
+    return candidate
+
+
+def _csv_safe(value):
+    """Prevent spreadsheet formula injection for CSV exports."""
+    if not isinstance(value, str):
+        return value
+    stripped = value.lstrip()
+    if stripped.startswith(CSV_FORMULA_PREFIXES):
+        return "'" + value
+    return value
+
+
+@contextmanager
+def _file_lock(lock_target):
+    """Best-effort cross-process lock using a sidecar lock file."""
+    lock_target = Path(lock_target)
+    lock_hash = hashlib.sha256(str(lock_target).encode("utf-8")).hexdigest()
+    lock_path = Path(tempfile.gettempdir()) / f"invoice-{lock_hash}.lock"
+    with open(lock_path, "a", encoding="utf-8") as lock_file:
+        if fcntl is not None:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            if fcntl is not None:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def _get_file_mode(path, default_mode):
+    """Use existing file permissions when possible."""
+    try:
+        return path.stat().st_mode & 0o777
+    except OSError:
+        return default_mode
+
+
+def _atomic_write_json(path, data, mode=0o600):
+    """Atomically write JSON content to disk."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w", delete=False, dir=path.parent, encoding="utf-8"
+        ) as tmp:
+            json.dump(data, tmp, indent=2)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+            tmp_path = Path(tmp.name)
+        if hasattr(os, "chmod"):
+            os.chmod(tmp_path, mode)
+        os.replace(tmp_path, path)
+    finally:
+        if tmp_path and tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+
+
+def _atomic_write_csv(path, rows, fieldnames, default_mode=0o600):
+    """Atomically rewrite a CSV file."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = None
+    mode = _get_file_mode(path, default_mode)
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w", newline="", delete=False, dir=path.parent, encoding="utf-8"
+        ) as tmp:
+            writer = csv.DictWriter(tmp, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+            tmp_path = Path(tmp.name)
+        if hasattr(os, "chmod"):
+            os.chmod(tmp_path, mode)
+        os.replace(tmp_path, path)
+    finally:
+        if tmp_path and tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+
+
+def _open_email_client(client_email, subject, body, pdf_path):
+    """Open a compose window in the default mail client."""
+    recipient = urllib.parse.quote(client_email, safe="@._+-")
+    encoded_subject = urllib.parse.quote(subject)
+    encoded_body = urllib.parse.quote(body)
+    mailto_url = f"mailto:{recipient}?subject={encoded_subject}&body={encoded_body}"
+
+    if sys.platform == "darwin":
+        script = """
+on run argv
+    set recipientAddress to item 1 of argv
+    set messageSubject to item 2 of argv
+    set messageBody to item 3 of argv
+    set attachmentPath to item 4 of argv
+
+    tell application "Mail"
+        set newMessage to make new outgoing message with properties {subject:messageSubject, content:messageBody}
+        tell newMessage
+            make new to recipient at end of to recipients with properties {address:recipientAddress}
+            tell content
+                make new attachment with properties {file name:(POSIX file attachmentPath as alias)}
+            end tell
+            activate
+        end tell
+    end tell
+end run
+""".strip()
+        subprocess.run(
+            ["osascript", "-e", script, client_email, subject, body, str(pdf_path)],
+            check=True,
+        )
+        return "apple_mail"
+
+    if sys.platform == "win32":
+        os.startfile(mailto_url)  # type: ignore[attr-defined]
+        return "mailto_windows"
+
+    subprocess.run(["xdg-open", mailto_url], check=True)
+    return "mailto"
+
+
 def load_config():
     """Load config from ~/.invoice_config.json, prompting for setup if needed."""
     if not CONFIG_FILE.exists():
@@ -94,8 +296,15 @@ def load_config():
         )
         return copy.deepcopy(DEFAULT_CONFIG)
 
-    with open(CONFIG_FILE) as f:
-        cfg = json.load(f)
+    try:
+        with open(CONFIG_FILE, encoding="utf-8") as f:
+            cfg = json.load(f)
+    except json.JSONDecodeError as exc:
+        raise click.ClickException(
+            f"Config file '{CONFIG_FILE}' is not valid JSON: {exc}"
+        ) from exc
+    except OSError as exc:
+        raise click.ClickException(f"Could not read config file '{CONFIG_FILE}': {exc}") from exc
 
     # Migrate old single 'payer' key to the new 'clients' list.
     if "payer" in cfg and "clients" not in cfg:
@@ -123,8 +332,7 @@ def load_config():
 
 def save_config(config):
     """Save config to ~/.invoice_config.json."""
-    with open(CONFIG_FILE, "w") as f:
-        json.dump(config, f, indent=2)
+    _atomic_write_json(CONFIG_FILE, config, mode=0o600)
 
 
 def _prompt_client_info(existing=None):
@@ -278,25 +486,27 @@ def _run_config_setup(existing=None):
 def get_next_invoice_number(csv_file):
     """Return the next invoice number in format YYYY-#### (last known + 1, starting at 1)."""
     current_year = date.today().year
+    csv_path = Path(csv_file)
     
-    if not Path(csv_file).exists():
+    if not csv_path.exists():
         return f"{current_year}-0001"
 
     last_num = 0
-    with open(csv_file, newline="") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            try:
-                # Extract number from YYYY-#### format
-                invoice_str = row["invoice_number"]
-                if "-" in invoice_str:
-                    year_part, num_part = invoice_str.split("-", 1)
-                    if year_part == str(current_year):
-                        num = int(num_part)
-                        if num > last_num:
-                            last_num = num
-            except (ValueError, KeyError):
-                pass
+    with _file_lock(csv_path):
+        with open(csv_path, newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                try:
+                    # Extract number from YYYY-#### format
+                    invoice_str = row["invoice_number"]
+                    if "-" in invoice_str:
+                        year_part, num_part = invoice_str.split("-", 1)
+                        if year_part == str(current_year):
+                            num = int(num_part)
+                            if num > last_num:
+                                last_num = num
+                except (ValueError, KeyError):
+                    pass
 
     return f"{current_year}-{last_num + 1:04d}"
 
@@ -324,9 +534,9 @@ def get_line_items():
                 continue
             break
 
-        hours = click.prompt("  Hours", type=float)
-        rate = click.prompt("  Rate ($/hr)", type=float)
-        amount = round(hours * rate, 2)
+        hours = _prompt_decimal("  Hours", "Hours", Decimal("0"))
+        rate = _prompt_decimal("  Rate ($/hr)", "Rate", Decimal("0"))
+        amount = _to_money_decimal(hours * rate)
 
         line_items.append(
             {
@@ -356,9 +566,7 @@ _LABEL_W = _DESC_W + _HRS_W + _RATE_W  # 145 mm
 def _payee_lines(payee):
     lines = [payee.get("name", "")]
     if payee.get("address"):
-        # Split address into two lines if it contains "\n"
-        address_lines = payee["address"].split("\n")
-        lines.extend(address_lines)
+        lines.extend(_split_address_lines(payee["address"]))
     city = payee.get("city", "")
     state = payee.get("state", "")
     zip_ = payee.get("zip", "")
@@ -376,9 +584,7 @@ def _client_lines(client):
     if client.get("contact"):
         lines.append(client["contact"])
     if client.get("address"):
-        # Split address into two lines if it contains "\n"
-        address_lines = client["address"].split("\n")
-        lines.extend(address_lines)
+        lines.extend(_split_address_lines(client["address"]))
     city = client.get("city", "")
     state = client.get("state", "")
     zip_ = client.get("zip", "")
@@ -461,7 +667,7 @@ def generate_pdf(invoice_number, invoice_date, config, line_items, output_path,
     pdf.set_text_color(0, 0, 0)
     pdf.set_font("Helvetica", "", 10)
 
-    subtotal = 0.0
+    subtotal = Decimal("0.00")
     shade = False
     for i, item in enumerate(line_items):
         # Add separator line between projects (except before first item)
@@ -476,18 +682,21 @@ def generate_pdf(invoice_number, invoice_date, config, line_items, output_path,
         row_y = pdf.get_y()
         # Use multi_cell so long descriptions wrap instead of overflowing.
         # Replace newlines in description with spaces for single spacing within projects
-        description = item["description"].replace("\n", " ")
+        description = str(item["description"]).replace("\n", " ")
+        hours = _to_decimal(item["hours"], "hours")
+        rate = _to_money_decimal(item["rate"], "rate")
+        amount = _to_money_decimal(item["amount"], "amount")
         pdf.multi_cell(_DESC_W, 5, description, fill=shade, new_x="LMARGIN", new_y="NEXT")  # Reduced from 6 to 5 for even tighter spacing
         row_h = pdf.get_y() - row_y
         # Render the numeric columns at the same starting Y, spanning the full row height.
         pdf.set_xy(pdf.l_margin + _DESC_W, row_y)
         pdf.cell(
-            _HRS_W, row_h, f"{item['hours']:.2f}", fill=shade, align="C", new_x="RIGHT", new_y="LAST"
+            _HRS_W, row_h, f"{hours:.2f}", fill=shade, align="C", new_x="RIGHT", new_y="LAST"
         )
         pdf.cell(
             _RATE_W,
             row_h,
-            f"${item['rate']:,.2f}",
+            f"${rate:,.2f}",
             fill=shade,
             align="C",
             new_x="RIGHT",
@@ -496,7 +705,7 @@ def generate_pdf(invoice_number, invoice_date, config, line_items, output_path,
         pdf.cell(
             _AMT_W,
             row_h,
-            f"${item['amount']:,.2f}",
+            f"${amount:,.2f}",
             fill=shade,
             align="R",
             new_x="LMARGIN",
@@ -504,10 +713,10 @@ def generate_pdf(invoice_number, invoice_date, config, line_items, output_path,
         )
         # Advance past the description if it was taller than the numeric cells.
         pdf.set_y(row_y + row_h)
-        subtotal += item["amount"]
+        subtotal += amount
         shade = not shade
 
-    subtotal = round(subtotal, 2)
+    subtotal = _to_money_decimal(subtotal, "subtotal")
 
     # ---- Divider ----
     pdf.ln(2)
@@ -556,9 +765,9 @@ def save_to_csv(invoice_number, invoice_date, config, line_items, total, pdf_fil
     Returns the path of the CSV file that was written.
     """
     csv_file = config.get("storage", {}).get("csv_file") or str(_DEFAULT_CSV)
+    csv_path = Path(csv_file)
     # Ensure parent directory exists.
-    Path(csv_file).parent.mkdir(parents=True, exist_ok=True)
-    file_exists = Path(csv_file).exists()
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
 
     if client is None:
         clients = config.get("clients", [])
@@ -569,22 +778,37 @@ def save_to_csv(invoice_number, invoice_date, config, line_items, total, pdf_fil
         for item in line_items
     )
 
-    with open(csv_file, "a", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=CSV_HEADERS)
-        if not file_exists:
-            writer.writeheader()
-        writer.writerow(
-            {
-                "invoice_number": str(invoice_number),
-                "date": invoice_date,
-                "payee_name": config.get("payee", {}).get("name", ""),
-                "payer_name": client.get("name", ""),
-                "line_items": items_str,
-                "total": f"{total:.2f}",
-                "pdf_file": pdf_file,
-                "status": "Draft",  # Default status for new invoices
-            }
-        )
+    row_data = {
+        "invoice_number": _validate_invoice_number(invoice_number),
+        "date": invoice_date,
+        "payee_name": _csv_safe(config.get("payee", {}).get("name", "")),
+        "payer_name": _csv_safe(client.get("name", "")),
+        "line_items": _csv_safe(items_str),
+        "total": f"{_to_money_decimal(total, 'total'):.2f}",
+        "pdf_file": _csv_safe(pdf_file),
+        "status": "Draft",  # Default status for new invoices
+    }
+
+    with _file_lock(csv_path):
+        existing_numbers = set()
+        if csv_path.exists():
+            with open(csv_path, newline="", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                existing_numbers = {str(row.get("invoice_number", "")) for row in reader}
+
+        if row_data["invoice_number"] in existing_numbers:
+            raise click.ClickException(
+                f"Invoice number '{row_data['invoice_number']}' already exists in {csv_path}. "
+                "Choose a different invoice number."
+            )
+
+        with open(csv_path, "a", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=CSV_HEADERS)
+            if f.tell() == 0:
+                writer.writeheader()
+            writer.writerow(row_data)
+            f.flush()
+            os.fsync(f.fileno())
     return csv_file
 
 
@@ -603,24 +827,7 @@ def cmd_config():
     """Set up or update payee, payer, and payment configuration."""
     existing = None
     if CONFIG_FILE.exists():
-        with open(CONFIG_FILE) as f:
-            existing = json.load(f)
-        # Migrate old 'payer' key to 'clients' list.
-        if "payer" in existing and "clients" not in existing:
-            existing["clients"] = [existing.pop("payer")]
-        existing.setdefault("clients", [copy.deepcopy(_DEFAULT_CLIENT)])
-        existing.setdefault("invoice_header", copy.deepcopy(DEFAULT_CONFIG["invoice_header"]))
-        existing["invoice_header"].setdefault("title", "INVOICE")
-        existing["invoice_header"].setdefault("logo_path", "")
-        existing.setdefault("payment", {})
-        existing["payment"].setdefault("description", "")
-        # Back-fill storage section for older configs.
-        existing.setdefault("storage", {})
-        existing["storage"].setdefault("csv_file", str(_DEFAULT_CSV))
-        existing["storage"].setdefault("invoices_dir", str(_DEFAULT_INVOICES_DIR))
-        # Expand ~ in case the user edited the file manually.
-        existing["storage"]["csv_file"] = str(Path(existing["storage"]["csv_file"]).expanduser())
-        existing["storage"]["invoices_dir"] = str(Path(existing["storage"]["invoices_dir"]).expanduser())
+        existing = load_config()
         click.echo(f"Existing config found in '{CONFIG_FILE}'.")
         if not click.confirm("Update it?"):
             return
@@ -641,7 +848,8 @@ def cmd_new(invoice_date):
     csv_file = config_data.get("storage", {}).get("csv_file") or str(_DEFAULT_CSV)
     invoices_dir = config_data.get("storage", {}).get("invoices_dir") or str(_DEFAULT_INVOICES_DIR)
 
-    invoice_number = get_next_invoice_number(csv_file)
+    default_invoice_number = get_next_invoice_number(csv_file)
+    invoice_number = default_invoice_number
     if invoice_date is None:
         invoice_date = date.today().isoformat()
 
@@ -650,13 +858,21 @@ def cmd_new(invoice_date):
     click.echo(f"Default: Invoice #{invoice_number} dated {invoice_date}")
     
     # Option to change invoice number
-    custom_number = click.prompt("Invoice number (press Enter to use default)", default=invoice_number, show_default=False)
-    if custom_number != invoice_number:
-        invoice_number = custom_number
+    custom_number = click.prompt(
+        "Invoice number (press Enter to use default)",
+        default=default_invoice_number,
+        show_default=False,
+    )
+    invoice_number = _validate_invoice_number(custom_number or default_invoice_number)
+    if invoice_number != default_invoice_number:
         click.echo(f"✓ Using custom invoice number: {invoice_number}")
     
     # Option to change invoice date
-    custom_date = click.prompt("Invoice date (YYYY-MM-DD, press Enter for today)", default=invoice_date, show_default=False)
+    custom_date = click.prompt(
+        "Invoice date (YYYY-MM-DD, press Enter for today)",
+        default=invoice_date,
+        show_default=False,
+    )
     try:
         # Validate the date format
         date.fromisoformat(custom_date)
@@ -715,8 +931,9 @@ def cmd_new(invoice_date):
 
     Path(invoices_dir).mkdir(parents=True, exist_ok=True)
     # Use ClientName_Invoice_InvoiceNumber.pdf format
-    client_name = client.get("name", "Client").replace(" ", "_")
-    pdf_filename = f"{client_name}_Invoice_{invoice_number}.pdf"
+    client_name = _sanitize_filename_component(client.get("name", "Client"), "Client")
+    safe_invoice_number = _sanitize_filename_component(invoice_number, "invoice")
+    pdf_filename = f"{client_name}_Invoice_{safe_invoice_number}.pdf"
     pdf_path = str(Path(invoices_dir) / pdf_filename)
 
     total = generate_pdf(
@@ -736,47 +953,16 @@ def cmd_new(invoice_date):
     if client.get("email"):
         if click.confirm("Open email client to send this invoice?"):
             try:
-                import subprocess
-                import urllib.parse
-                
                 # Create email subject and body
                 subject = f"Invoice #{invoice_number} from {config_data['payee']['name']}"
                 body = f"Dear {client.get('contact', 'Valued Client')},\n\nPlease find attached invoice #{invoice_number} for ${total:,.2f}.\n\nPayment is due {payment_terms}.\n\n{payment_description or 'Thank you for your business!'}"
-                
-                # URL encode for mailto: link
-                encoded_subject = urllib.parse.quote(subject)
-                encoded_body = urllib.parse.quote(body)
-                
-                # Create mailto: link
-                mailto_url = f"mailto:{client['email']}?subject={encoded_subject}&body={encoded_body}"
-                
-                # Open default mail client
-                if sys.platform == 'darwin':  # macOS
-                    # Use AppleScript to create email with attachment
-                    script = f'''
-                    tell application "Mail"
-                        set newMessage to make new outgoing message with properties {{subject:"{subject}", content:"{body}"}}
-                        tell newMessage
-                            make new to recipient at end of to recipients with properties {{address:"{client['email']}"}}
-                            tell content
-                                make new attachment with properties {{file name:"{pdf_path}"}}
-                            end tell
-                            activate
-                        end tell
-                    end tell
-                    '''
-                    subprocess.run(['osascript', '-e', script])
+
+                mode = _open_email_client(client["email"], subject, body, pdf_path)
+                if mode == "apple_mail":
                     click.echo("✓ Apple Mail opened with invoice attached!")
                     click.echo("  - Email is ready to send")
                     click.echo("  - Review and click Send!")
-                    
-                elif sys.platform == 'win32':  # Windows
-                    subprocess.run(['start', mailto_url], shell=True)
-                    click.echo("✓ Email client opened with invoice ready to send")
-                    click.echo(f"  - Manually attach: {pdf_path}")
-                    
-                else:  # Linux
-                    subprocess.run(['xdg-open', mailto_url])
+                else:
                     click.echo("✓ Email client opened with invoice ready to send")
                     click.echo(f"  - Manually attach: {pdf_path}")
                 
@@ -786,39 +972,6 @@ def cmd_new(invoice_date):
                 click.echo(f"  {pdf_path}")
     else:
         click.echo("💡 Tip: Add client email in config to enable quick email sending")
-
-
-@cli.command("list")
-def cmd_list():
-    """List all previously generated invoices."""
-    config_data = load_config()
-    csv_file = config_data.get("storage", {}).get("csv_file") or str(_DEFAULT_CSV)
-
-    if not Path(csv_file).exists():
-        click.echo("No invoices found. Run 'invoice.py new' to create one.")
-        return
-
-    with open(csv_file, newline="") as f:
-        rows = list(csv.DictReader(f))
-
-    if not rows:
-        click.echo("No invoices found.")
-        return
-
-    # Header
-    click.echo(
-        f"\n{'#':<8}{'Date':<14}{'Payer':<28}{'Total':>10}   PDF"
-    )
-    click.echo("-" * 80)
-    for row in rows:
-        click.echo(
-            f"{row['invoice_number']:<8}"
-            f"{row['date']:<14}"
-            f"{row['payer_name']:<28}"
-            f"${row['total']:>9}   "
-            f"{row['pdf_file']}"
-        )
-    click.echo()
 
 
 @cli.command("status")
@@ -833,28 +986,28 @@ def cmd_status(invoice_number, status):
         click.echo(f"No invoices found. CSV file not found: {csv_file}")
         return
     
-    # Read all rows
-    with open(csv_file, newline="") as f:
-        reader = csv.DictReader(f)
-        rows = list(reader)
-    
-    # Find the invoice
-    found = False
-    for row in rows:
-        if row['invoice_number'] == invoice_number:
-            row['status'] = status.capitalize()
-            found = True
-            break
-    
-    if not found:
-        click.echo(f"Invoice #{invoice_number} not found.")
-        return
-    
-    # Write back to CSV
-    with open(csv_file, 'w', newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=CSV_HEADERS)
-        writer.writeheader()
-        writer.writerows(rows)
+    invoice_number = _validate_invoice_number(invoice_number)
+
+    with _file_lock(csv_file):
+        # Read all rows
+        with open(csv_file, newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            rows = list(reader)
+
+        # Find the invoice
+        found = False
+        for row in rows:
+            if row["invoice_number"] == invoice_number:
+                row["status"] = status.capitalize()
+                found = True
+                break
+
+        if not found:
+            click.echo(f"Invoice #{invoice_number} not found.")
+            return
+
+        # Write back atomically.
+        _atomic_write_csv(Path(csv_file), rows, CSV_HEADERS)
     
     click.echo(f"✓ Invoice #{invoice_number} status updated to: {status.capitalize()}")
 
@@ -872,7 +1025,7 @@ def cmd_list(status):
         click.echo("No invoices found. Run 'invoice.py new' to create one.")
         return
 
-    with open(csv_file, newline="") as f:
+    with open(csv_file, newline="", encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
 
     if not rows:
@@ -886,21 +1039,55 @@ def cmd_list(status):
             click.echo(f"No invoices found with status: {status.capitalize()}")
             return
 
-    # Header
-    # Calculate width based on longest PDF path for proper alignment
-    max_pdf_length = max(len(row['pdf_file']) for row in rows) if rows else 30
-    header_width = 8 + 14 + 28 + 10 + 12 + max_pdf_length + 10
-    
-    click.echo("\n#\t\tDate\t\t\tPayer\t\t\t\t\t\tTotal\t\t\tStatus\t\tPDF")
-    click.echo("-" * 110)
+    display_rows = []
     for row in rows:
+        try:
+            total_value = _to_money_decimal(row.get("total") or 0, "total")
+        except click.ClickException:
+            total_value = Decimal("0.00")
+        display_rows.append(
+            {
+                "invoice_number": str(row.get("invoice_number") or ""),
+                "date": str(row.get("date") or ""),
+                "payer_name": str(row.get("payer_name") or ""),
+                "total": f"${total_value:,.2f}",
+                "status": str(row.get("status") or "Draft"),
+                "pdf": Path(row.get("pdf_file") or "").name,
+            }
+        )
+
+    headers = {
+        "invoice_number": "#",
+        "date": "Date",
+        "payer_name": "Payer",
+        "total": "Total",
+        "status": "Status",
+        "pdf": "PDF",
+    }
+
+    widths = {
+        key: max(len(headers[key]), *(len(item[key]) for item in display_rows))
+        for key in headers
+    }
+
+    click.echo()
+    click.echo(
+        f"{headers['invoice_number']:<{widths['invoice_number']}}  "
+        f"{headers['date']:<{widths['date']}}  "
+        f"{headers['payer_name']:<{widths['payer_name']}}  "
+        f"{headers['total']:>{widths['total']}}  "
+        f"{headers['status']:<{widths['status']}}  "
+        f"{headers['pdf']:<{widths['pdf']}}"
+    )
+    click.echo("-" * (sum(widths.values()) + 10))
+    for row in display_rows:
         click.echo(
-            f"{row['invoice_number']}\t\t"
-            f"{row['date']}\t\t"
-            f"{row['payer_name']}\t\t\t"
-            f"${float(row['total']):,.2f}\t\t"
-            f"{row.get('status', 'Draft')}\t\t"
-            f"{Path(row['pdf_file']).name}"
+            f"{row['invoice_number']:<{widths['invoice_number']}}  "
+            f"{row['date']:<{widths['date']}}  "
+            f"{row['payer_name']:<{widths['payer_name']}}  "
+            f"{row['total']:>{widths['total']}}  "
+            f"{row['status']:<{widths['status']}}  "
+            f"{row['pdf']:<{widths['pdf']}}"
         )
     click.echo()
 

@@ -1,20 +1,20 @@
 #!/bin/bash
 # Wrapper script for invoice.py that automatically handles virtual environment
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# If called via symlink, resolve to actual project directory fallback.
+if [[ "$SCRIPT_DIR" == *".local/bin"* ]]; then
+    VENV_DIR="/Users/davidschmidt/Documents/Projects/invoice"
+else
+    VENV_DIR="$SCRIPT_DIR"
+fi
+
 # Check if we're already in the venv
-if [[ "$VIRTUAL_ENV" != "" ]]; then
+if [[ "$VIRTUAL_ENV" != "" && -x "$VIRTUAL_ENV/bin/python" ]]; then
     # Already in venv, just run the command
-    python "$@"
+    "$VIRTUAL_ENV/bin/python" "$VENV_DIR/invoice.py" "$@"
 else
     # Not in venv, activate it first
-    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    # If called via symlink, resolve to actual directory
-    if [[ "$SCRIPT_DIR" == *".local/bin"* ]]; then
-        VENV_DIR="/Users/davidschmidt/Documents/Projects/invoice"
-    else
-        VENV_DIR="$SCRIPT_DIR"
-    fi
-    
     VENV="$VENV_DIR/venv"
     
     if [[ -d "$VENV" ]]; then
