@@ -892,7 +892,7 @@ def cmd_list(status):
     header_width = 8 + 14 + 28 + 10 + 12 + max_pdf_length + 10
     
     click.echo(
-        f"\n{'#':<8}{'Date':<14}{'Payer':<28}{'Total':>10} {'Status':<12} PDF"
+        f"\n{'#':<8}{'Date':<14}{'Payer':<28}{'Total':>10}  {'Status':<12}  PDF"
     )
     click.echo("-" * header_width)
     for row in rows:
@@ -900,7 +900,7 @@ def cmd_list(status):
             f"{row['invoice_number']:<8}"
             f"{row['date']:<14}"
             f"{row['payer_name']:<28}"
-            f"${row['total']:>9}   "
+            f"${row['total']:>9}  "
             f"{row.get('status', 'Draft'):<12}  "
             f"{row['pdf_file']}"
         )
