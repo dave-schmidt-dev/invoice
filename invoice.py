@@ -892,7 +892,7 @@ def cmd_list(status):
     header_width = 8 + 14 + 28 + 10 + 12 + max_pdf_length + 10
     
     click.echo(
-        f"\n{'#':<8}{'Date':<14}{'Payer':<28}{'Total':>10}{'Status':<12}   PDF"
+        f"\n{'#':<8}{'Date':<14}{'Payer':<28}{'Total':>10} {'Status':<12} PDF"
     )
     click.echo("-" * header_width)
     for row in rows:
