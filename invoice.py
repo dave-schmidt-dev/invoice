@@ -887,10 +887,14 @@ def cmd_list(status):
             return
 
     # Header
+    # Calculate width based on longest PDF path for proper alignment
+    max_pdf_length = max(len(row['pdf_file']) for row in rows) if rows else 30
+    header_width = 8 + 14 + 28 + 10 + 12 + max_pdf_length + 10
+    
     click.echo(
         f"\n{'#':<8}{'Date':<14}{'Payer':<28}{'Total':>10}{'Status':<12}   PDF"
     )
-    click.echo("-" * 90)
+    click.echo("-" * header_width)
     for row in rows:
         click.echo(
             f"{row['invoice_number']:<8}"
