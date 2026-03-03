@@ -23,6 +23,13 @@ CONFIG_FILE = Path.home() / ".invoice_config.json"
 _DEFAULT_CSV = Path.home() / "invoices" / "invoices.csv"
 _DEFAULT_INVOICES_DIR = Path.home() / "invoices"
 
+# Logo constraints (millimetres)
+_LOGO_MAX_W = 50
+_LOGO_MAX_H = 25
+_VALID_LOGO_EXTS = {".png", ".jpg", ".jpeg"}
+
+PAYMENT_TERMS_CHOICES = ["Net 15", "Net 30", "Upon Receipt", "Custom"]
+
 CSV_HEADERS = [
     "invoice_number",
     "date",
@@ -33,7 +40,20 @@ CSV_HEADERS = [
     "pdf_file",
 ]
 
+_DEFAULT_CLIENT = {
+    "name": "",
+    "address": "",
+    "city": "",
+    "state": "",
+    "zip": "",
+    "contact": "",
+}
+
 DEFAULT_CONFIG = {
+    "invoice_header": {
+        "title": "INVOICE",
+        "logo_path": "",
+    },
     "payee": {
         "name": "",
         "address": "",
@@ -43,18 +63,12 @@ DEFAULT_CONFIG = {
         "email": "",
         "phone": "",
     },
-    "payer": {
-        "name": "",
-        "address": "",
-        "city": "",
-        "state": "",
-        "zip": "",
-        "contact": "",
-    },
+    "clients": [copy.deepcopy(_DEFAULT_CLIENT)],
     "payment": {
         "bank_name": "",
         "routing": "",
         "account": "",
+        "description": "",
     },
     "storage": {
         "csv_file": str(_DEFAULT_CSV),
@@ -81,6 +95,20 @@ def load_config():
     with open(CONFIG_FILE) as f:
         cfg = json.load(f)
 
+    # Migrate old single 'payer' key to the new 'clients' list.
+    if "payer" in cfg and "clients" not in cfg:
+        cfg["clients"] = [cfg.pop("payer")]
+    cfg.setdefault("clients", [copy.deepcopy(_DEFAULT_CLIENT)])
+
+    # Back-fill invoice_header section.
+    cfg.setdefault("invoice_header", copy.deepcopy(DEFAULT_CONFIG["invoice_header"]))
+    cfg["invoice_header"].setdefault("title", "INVOICE")
+    cfg["invoice_header"].setdefault("logo_path", "")
+
+    # Back-fill payment fields.
+    cfg.setdefault("payment", {})
+    cfg["payment"].setdefault("description", "")
+
     # Back-fill the storage section for configs created before this field existed.
     cfg.setdefault("storage", {})
     cfg["storage"].setdefault("csv_file", str(_DEFAULT_CSV))
@@ -97,9 +125,52 @@ def save_config(config):
         json.dump(config, f, indent=2)
 
 
+def _prompt_client_info(existing=None):
+    """Interactively prompt for a single client's info. Returns a client dict."""
+    c = copy.deepcopy(existing or _DEFAULT_CLIENT)
+    c["name"] = click.prompt("Client name or company", default=c.get("name") or "")
+    c["contact"] = click.prompt("Contact name", default=c.get("contact") or "")
+    c["address"] = click.prompt("Client street address", default=c.get("address") or "")
+    c["city"] = click.prompt("Client city", default=c.get("city") or "")
+    c["state"] = click.prompt("Client state", default=c.get("state") or "")
+    c["zip"] = click.prompt("Client ZIP code", default=c.get("zip") or "")
+    return c
+
+
 def _run_config_setup(existing=None):
     """Interactive config wizard. Merges into *existing* if provided."""
     config = copy.deepcopy(existing or DEFAULT_CONFIG)
+    # Ensure all sections exist (handles migrated / partial configs).
+    config.setdefault("invoice_header", copy.deepcopy(DEFAULT_CONFIG["invoice_header"]))
+    config["invoice_header"].setdefault("title", "INVOICE")
+    config["invoice_header"].setdefault("logo_path", "")
+    if "payer" in config and "clients" not in config:
+        config["clients"] = [config.pop("payer")]
+    config.setdefault("clients", [copy.deepcopy(_DEFAULT_CLIENT)])
+    config.setdefault("payment", {})
+    config["payment"].setdefault("description", "")
+
+    # ---- Invoice Header ----
+    click.echo("\n=== Invoice Header ===")
+    config["invoice_header"]["title"] = click.prompt(
+        "Invoice title", default=config["invoice_header"].get("title") or "INVOICE"
+    )
+    while True:
+        logo = click.prompt(
+            "Logo image path (PNG/JPG, leave blank to skip)",
+            default=config["invoice_header"].get("logo_path") or "",
+        )
+        if not logo:
+            config["invoice_header"]["logo_path"] = ""
+            break
+        logo_path = Path(logo).expanduser()
+        if not logo_path.exists():
+            click.echo(f"  File not found: {logo_path}")
+        elif logo_path.suffix.lower() not in _VALID_LOGO_EXTS:
+            click.echo(f"  Unsupported format '{logo_path.suffix}'. Use PNG or JPG.")
+        else:
+            config["invoice_header"]["logo_path"] = str(logo_path)
+            break
 
     click.echo("\n=== Payee Information (You / Your Company) ===")
     config["payee"]["name"] = click.prompt(
@@ -124,25 +195,44 @@ def _run_config_setup(existing=None):
         "Phone", default=config["payee"]["phone"] or ""
     )
 
-    click.echo("\n=== Payer Information (Your Client) ===")
-    config["payer"]["name"] = click.prompt(
-        "Client name or company", default=config["payer"]["name"] or ""
-    )
-    config["payer"]["contact"] = click.prompt(
-        "Contact name", default=config["payer"]["contact"] or ""
-    )
-    config["payer"]["address"] = click.prompt(
-        "Client street address", default=config["payer"]["address"] or ""
-    )
-    config["payer"]["city"] = click.prompt(
-        "Client city", default=config["payer"]["city"] or ""
-    )
-    config["payer"]["state"] = click.prompt(
-        "Client state", default=config["payer"]["state"] or ""
-    )
-    config["payer"]["zip"] = click.prompt(
-        "Client ZIP code", default=config["payer"]["zip"] or ""
-    )
+    # ---- Client Profiles ----
+    click.echo("\n=== Client Profiles ===")
+    clients = list(config.get("clients", [copy.deepcopy(_DEFAULT_CLIENT)]))
+    while True:
+        click.echo("\nCurrent clients:")
+        if clients:
+            for i, c in enumerate(clients):
+                click.echo(f"  {i + 1}. {c.get('name') or '(unnamed)'}")
+        else:
+            click.echo("  (none)")
+        click.echo("Options: [a] Add client  [e#] Edit (e.g. e1)  [d#] Delete (e.g. d1)  [done]")
+        action = click.prompt("Action", default="done")
+        action = action.strip().lower()
+        if action == "done":
+            if not clients:
+                click.echo("At least one client profile is required.")
+            else:
+                break
+        elif action == "a":
+            click.echo("\n--- New Client ---")
+            clients.append(_prompt_client_info())
+        elif action.startswith("e") and action[1:].isdigit():
+            idx = int(action[1:]) - 1
+            if 0 <= idx < len(clients):
+                click.echo(f"\n--- Edit Client {idx + 1} ---")
+                clients[idx] = _prompt_client_info(clients[idx])
+            else:
+                click.echo("Invalid selection.")
+        elif action.startswith("d") and action[1:].isdigit():
+            idx = int(action[1:]) - 1
+            if 0 <= idx < len(clients):
+                removed = clients.pop(idx)
+                click.echo(f"Removed client: {removed.get('name')}")
+            else:
+                click.echo("Invalid selection.")
+        else:
+            click.echo("Unknown action.")
+    config["clients"] = clients
 
     click.echo("\n=== Payment / Banking Information ===")
     config["payment"]["bank_name"] = click.prompt(
@@ -153,6 +243,10 @@ def _run_config_setup(existing=None):
     )
     config["payment"]["account"] = click.prompt(
         "Account number", default=config["payment"]["account"] or ""
+    )
+    config["payment"]["description"] = click.prompt(
+        "Payment description (e.g. 'Please pay via ACH or check')",
+        default=config["payment"].get("description") or "",
     )
 
     click.echo("\n=== Storage Paths ===")
@@ -262,37 +356,51 @@ def _payee_lines(payee):
     return [l for l in lines if l]
 
 
-def _payer_lines(payer):
-    lines = [payer.get("name", "")]
-    if payer.get("contact"):
-        lines.append(payer["contact"])
-    if payer.get("address"):
-        lines.append(payer["address"])
-    city = payer.get("city", "")
-    state = payer.get("state", "")
-    zip_ = payer.get("zip", "")
+def _client_lines(client):
+    lines = [client.get("name", "")]
+    if client.get("contact"):
+        lines.append(client["contact"])
+    if client.get("address"):
+        lines.append(client["address"])
+    city = client.get("city", "")
+    state = client.get("state", "")
+    zip_ = client.get("zip", "")
     if city or state or zip_:
         lines.append(f"{city}, {state} {zip_}".strip(", ").strip())
     return [l for l in lines if l]
 
 
-def generate_pdf(invoice_number, invoice_date, config, line_items, output_path):
+def generate_pdf(invoice_number, invoice_date, config, line_items, output_path,
+                 client=None, payment_terms=""):
     """Render the PDF invoice and return the subtotal."""
     pdf = FPDF()
     pdf.set_margins(20, 20, 20)
     pdf.add_page()
 
     payee = config.get("payee", {})
-    payer = config.get("payer", {})
+    if client is None:
+        clients = config.get("clients", [])
+        client = clients[0] if clients else {}
     payment = config.get("payment", {})
+    header_cfg = config.get("invoice_header", {})
 
     # ---- Header ----
+    logo_path = header_cfg.get("logo_path", "")
+    title_text = header_cfg.get("title") or "INVOICE"
+
+    if logo_path and Path(logo_path).exists():
+        # Render logo constrained to _LOGO_MAX_W × _LOGO_MAX_H mm, preserving aspect ratio.
+        pdf.image(logo_path, w=_LOGO_MAX_W, h=_LOGO_MAX_H, keep_aspect_ratio=True)
+        pdf.ln(2)
+
     pdf.set_font("Helvetica", "B", 28)
-    pdf.cell(0, 14, "INVOICE", align="R", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 14, title_text, align="R", new_x="LMARGIN", new_y="NEXT")
 
     pdf.set_font("Helvetica", "", 10)
     pdf.cell(0, 5, f"Invoice #: {invoice_number:04d}", align="R", new_x="LMARGIN", new_y="NEXT")
     pdf.cell(0, 5, f"Date: {invoice_date}", align="R", new_x="LMARGIN", new_y="NEXT")
+    if payment_terms:
+        pdf.cell(0, 5, f"Payment Terms: {payment_terms}", align="R", new_x="LMARGIN", new_y="NEXT")
     pdf.ln(6)
 
     # ---- FROM / BILL TO ----
@@ -305,11 +413,11 @@ def generate_pdf(invoice_number, invoice_date, config, line_items, output_path):
 
     pdf.set_font("Helvetica", "", 10)
     payee_ls = _payee_lines(payee)
-    payer_ls = _payer_lines(payer)
+    client_ls = _client_lines(client)
 
-    for i in range(max(len(payee_ls), len(payer_ls))):
+    for i in range(max(len(payee_ls), len(client_ls))):
         left = payee_ls[i] if i < len(payee_ls) else ""
-        right = payer_ls[i] if i < len(payer_ls) else ""
+        right = client_ls[i] if i < len(client_ls) else ""
         pdf.cell(col_w, 6, left, new_x="RIGHT", new_y="LAST")
         pdf.set_x(pdf.get_x() + 10)
         pdf.cell(col_w, 6, right, new_x="LMARGIN", new_y="NEXT")
@@ -381,11 +489,13 @@ def generate_pdf(invoice_number, invoice_date, config, line_items, output_path):
     pdf.cell(_AMT_W, 8, f"${subtotal:,.2f}", align="R", new_x="LMARGIN", new_y="NEXT")
 
     # ---- Payment info ----
-    if any(payment.get(k) for k in ("bank_name", "routing", "account")):
+    if any(payment.get(k) for k in ("bank_name", "routing", "account", "description")):
         pdf.ln(12)
         pdf.set_font("Helvetica", "B", 10)
         pdf.cell(0, 6, "Payment Information:", new_x="LMARGIN", new_y="NEXT")
         pdf.set_font("Helvetica", "", 10)
+        if payment.get("description"):
+            pdf.cell(0, 5, payment["description"], new_x="LMARGIN", new_y="NEXT")
         if payment.get("bank_name"):
             pdf.cell(0, 5, f"Bank: {payment['bank_name']}", new_x="LMARGIN", new_y="NEXT")
         if payment.get("routing"):
@@ -402,7 +512,7 @@ def generate_pdf(invoice_number, invoice_date, config, line_items, output_path):
 # ---------------------------------------------------------------------------
 
 
-def save_to_csv(invoice_number, invoice_date, config, line_items, total, pdf_file):
+def save_to_csv(invoice_number, invoice_date, config, line_items, total, pdf_file, client=None):
     """Append the invoice summary to the CSV log.
 
     Returns the path of the CSV file that was written.
@@ -411,6 +521,10 @@ def save_to_csv(invoice_number, invoice_date, config, line_items, total, pdf_fil
     # Ensure parent directory exists.
     Path(csv_file).parent.mkdir(parents=True, exist_ok=True)
     file_exists = Path(csv_file).exists()
+
+    if client is None:
+        clients = config.get("clients", [])
+        client = clients[0] if clients else {}
 
     items_str = "; ".join(
         f"{item['description']} ({item['hours']} hrs @ ${item['rate']:.2f}/hr)"
@@ -426,7 +540,7 @@ def save_to_csv(invoice_number, invoice_date, config, line_items, total, pdf_fil
                 "invoice_number": f"{invoice_number:04d}",
                 "date": invoice_date,
                 "payee_name": config.get("payee", {}).get("name", ""),
-                "payer_name": config.get("payer", {}).get("name", ""),
+                "payer_name": client.get("name", ""),
                 "line_items": items_str,
                 "total": f"{total:.2f}",
                 "pdf_file": pdf_file,
@@ -452,6 +566,15 @@ def cmd_config():
     if CONFIG_FILE.exists():
         with open(CONFIG_FILE) as f:
             existing = json.load(f)
+        # Migrate old 'payer' key to 'clients' list.
+        if "payer" in existing and "clients" not in existing:
+            existing["clients"] = [existing.pop("payer")]
+        existing.setdefault("clients", [copy.deepcopy(_DEFAULT_CLIENT)])
+        existing.setdefault("invoice_header", copy.deepcopy(DEFAULT_CONFIG["invoice_header"]))
+        existing["invoice_header"].setdefault("title", "INVOICE")
+        existing["invoice_header"].setdefault("logo_path", "")
+        existing.setdefault("payment", {})
+        existing["payment"].setdefault("description", "")
         # Back-fill storage section for older configs.
         existing.setdefault("storage", {})
         existing["storage"].setdefault("csv_file", str(_DEFAULT_CSV))
@@ -485,14 +608,50 @@ def cmd_new(invoice_date):
 
     click.echo(f"\nCreating Invoice #{invoice_number:04d}  ({invoice_date})")
 
+    # ---- Client selection ----
+    clients = config_data.get("clients", [])
+    if not clients:
+        click.echo("No client profiles found. Please run 'invoice.py config' to add clients.")
+        return
+    if len(clients) == 1:
+        client = clients[0]
+        click.echo(f"Client: {client.get('name', '')}")
+    else:
+        click.echo("\nSelect a client:")
+        for i, c in enumerate(clients):
+            click.echo(f"  {i + 1}. {c.get('name', '(unnamed)')}")
+        choice = click.prompt("Client number", type=click.IntRange(1, len(clients)))
+        client = clients[choice - 1]
+
+    # ---- Payment terms ----
+    click.echo("\nPayment Terms:")
+    for i, t in enumerate(PAYMENT_TERMS_CHOICES):
+        click.echo(f"  {i + 1}. {t}")
+    terms_idx = click.prompt(
+        "Select payment terms",
+        type=click.IntRange(1, len(PAYMENT_TERMS_CHOICES)),
+        default=2,
+    )
+    selected = PAYMENT_TERMS_CHOICES[terms_idx - 1]
+    if selected == "Custom":
+        payment_terms = click.prompt("Enter custom payment terms")
+    else:
+        payment_terms = selected
+
     line_items = get_line_items()
 
     Path(invoices_dir).mkdir(parents=True, exist_ok=True)
     pdf_filename = f"invoice_{invoice_number:04d}_{invoice_date}.pdf"
     pdf_path = str(Path(invoices_dir) / pdf_filename)
 
-    total = generate_pdf(invoice_number, invoice_date, config_data, line_items, pdf_path)
-    csv_used = save_to_csv(invoice_number, invoice_date, config_data, line_items, total, pdf_path)
+    total = generate_pdf(
+        invoice_number, invoice_date, config_data, line_items, pdf_path,
+        client=client, payment_terms=payment_terms,
+    )
+    csv_used = save_to_csv(
+        invoice_number, invoice_date, config_data, line_items, total, pdf_path,
+        client=client,
+    )
 
     click.echo(f"\n✓  Invoice #{invoice_number:04d} saved to: {pdf_path}")
     click.echo(f"✓  Total due: ${total:,.2f}")
