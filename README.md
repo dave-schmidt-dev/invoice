@@ -5,7 +5,7 @@
 [![Python](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-Generate beautiful, professional PDF invoices with a simple CLI interface.
+Generate clean and simple PDF invoices with a simple CLI interface.
 
 ## ✨ Features
 
