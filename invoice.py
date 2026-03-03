@@ -334,13 +334,18 @@ def generate_pdf(invoice_number, invoice_date, config, line_items, output_path):
     shade = False
     for item in line_items:
         pdf.set_fill_color(245, 245, 245)
-        pdf.cell(_DESC_W, 7, item["description"], fill=shade, new_x="RIGHT", new_y="LAST")
+        row_y = pdf.get_y()
+        # Use multi_cell so long descriptions wrap instead of overflowing.
+        pdf.multi_cell(_DESC_W, 7, item["description"], fill=shade, new_x="LMARGIN", new_y="NEXT")
+        row_h = pdf.get_y() - row_y
+        # Render the numeric columns at the same starting Y, spanning the full row height.
+        pdf.set_xy(pdf.l_margin + _DESC_W, row_y)
         pdf.cell(
-            _HRS_W, 7, f"{item['hours']:.2f}", fill=shade, align="C", new_x="RIGHT", new_y="LAST"
+            _HRS_W, row_h, f"{item['hours']:.2f}", fill=shade, align="C", new_x="RIGHT", new_y="LAST"
         )
         pdf.cell(
             _RATE_W,
-            7,
+            row_h,
             f"${item['rate']:,.2f}",
             fill=shade,
             align="C",
@@ -349,13 +354,15 @@ def generate_pdf(invoice_number, invoice_date, config, line_items, output_path):
         )
         pdf.cell(
             _AMT_W,
-            7,
+            row_h,
             f"${item['amount']:,.2f}",
             fill=shade,
             align="R",
             new_x="LMARGIN",
             new_y="NEXT",
         )
+        # Advance past the description if it was taller than the numeric cells.
+        pdf.set_y(row_y + row_h)
         subtotal += item["amount"]
         shade = not shade
 
