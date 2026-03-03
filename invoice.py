@@ -891,18 +891,16 @@ def cmd_list(status):
     max_pdf_length = max(len(row['pdf_file']) for row in rows) if rows else 30
     header_width = 8 + 14 + 28 + 10 + 12 + max_pdf_length + 10
     
-    click.echo(
-        f"\n{'#':<8}{'Date':<14}{'Payer':<28}{'Total':>10}  {'Status':<12}  PDF"
-    )
-    click.echo("-" * header_width)
+    click.echo("\n#\t\tDate\t\t\tPayer\t\t\t\t\t\tTotal\t\t\tStatus\t\tPDF")
+    click.echo("-" * 110)
     for row in rows:
         click.echo(
-            f"{row['invoice_number']:<8}"
-            f"{row['date']:<14}"
-            f"{row['payer_name']:<28}"
-            f"${row['total']:>9}  "
-            f"{row.get('status', 'Draft'):<12}  "
-            f"{row['pdf_file']}"
+            f"{row['invoice_number']}\t\t"
+            f"{row['date']}\t\t"
+            f"{row['payer_name']}\t\t\t"
+            f"${float(row['total']):,.2f}\t\t"
+            f"{row.get('status', 'Draft')}\t\t"
+            f"{Path(row['pdf_file']).name}"
         )
     click.echo()
 

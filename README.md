@@ -55,12 +55,14 @@ This prevents conflicts with system-wide Python packages and ensures a clean env
 
 ## 🚀 Quick Start
 
+**💡 Local Alias**: This project includes a local `invoice` alias that automatically activates the virtual environment. You can use `invoice` instead of `python invoice.py` throughout this documentation.
+
 ### 1️⃣ Configure payee & payer information
 
 Run the config wizard once (or any time you need to update your info):
 
 ```bash
-python invoice.py config
+invoice config
 ```
 
 This saves your information to `~/.invoice_config.json` so the tool works from **any directory**.  
@@ -77,7 +79,7 @@ See [`config.example.json`](config.example.json) for the expected structure.
 ### 2️⃣ Create a new invoice
 
 ```bash
-python invoice.py new
+invoice new
 ```
 
 You will be prompted to enter invoice details and line items:
@@ -126,7 +128,7 @@ Description (blank to finish):
 ### 3. List all invoices
 
 ```bash
-python invoice.py list
+invoice list
 ```
 
 ```
@@ -142,16 +144,16 @@ Because the config is stored in your home directory, you can run the tool from a
 ```bash
 # From a project directory, a temp folder, anywhere — same invoice history every time
 cd /some/other/directory
-python /path/to/invoice.py new
+invoice new
 ```
 
-Or add a shell alias for convenience:
+**💡 For your own setup**: You can add a shell alias for convenience:
 
 ```bash
 alias invoice="python /path/to/invoice.py"
 ```
 
-Then simply run `invoice new`, `invoice list`, etc. from any location.
+Then simply run `invoice new`, `invoice list`, etc. from any location. The local version of this project already has this alias configured.
 
 ## File Structure
 

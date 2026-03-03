@@ -1,0 +1,32 @@
+#!/bin/bash
+# Wrapper script for invoice.py that automatically handles virtual environment
+
+# Check if we're already in the venv
+if [[ "$VIRTUAL_ENV" != "" ]]; then
+    # Already in venv, just run the command
+    python "$@"
+else
+    # Not in venv, activate it first
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    # If called via symlink, resolve to actual directory
+    if [[ "$SCRIPT_DIR" == *".local/bin"* ]]; then
+        VENV_DIR="/Users/davidschmidt/Documents/Projects/invoice"
+    else
+        VENV_DIR="$SCRIPT_DIR"
+    fi
+    
+    VENV="$VENV_DIR/venv"
+    
+    if [[ -d "$VENV" ]]; then
+        # Activate venv and run command
+        source "$VENV/bin/activate" && python "$VENV_DIR/invoice.py" "$@"
+    else
+        echo "Virtual environment not found at: $VENV"
+        echo "Please run:"
+        echo "  cd /Users/davidschmidt/Documents/Projects/invoice"
+        echo "  python -m venv venv"
+        echo "  source venv/bin/activate"
+        echo "  pip install -r requirements.txt"
+        exit 1
+    fi
+fi
