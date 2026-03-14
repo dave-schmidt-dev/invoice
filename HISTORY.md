@@ -1,3 +1,9 @@
+## 2026-03-14
+
+- Added root CLI shortcuts: `--ledger` opens the configured invoice ledger and `--invoice INVOICE_NUMBER` opens the exact PDF path recorded for that invoice.
+- Made the ledger path explicit in config as `storage.ledger_file` while keeping backward compatibility with legacy `storage.csv_file` values.
+- Added regression coverage for ledger-path migration, invoice PDF lookup, and the new shortcut-flag behavior.
+
 ## 2026-03-03
 
 - Fixed `invoice list` table formatting to use dynamic column widths instead of tab characters, which resolves header/column misalignment for variable-length values.

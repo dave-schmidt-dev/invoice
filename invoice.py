@@ -4,6 +4,8 @@
 Generates professional PDF invoices and maintains a CSV log of all invoices.
 
 Usage:
+    python invoice.py --ledger            # Open the configured invoice ledger
+    python invoice.py --invoice 2026-0001 # Open the PDF for a specific invoice
     python invoice.py config   # Set up payee/payer information
     python invoice.py new      # Create a new invoice
     python invoice.py list     # List all past invoices
@@ -29,7 +31,7 @@ from fpdf import FPDF
 
 CONFIG_FILE = Path.home() / ".invoice_config.json"
 # Defaults used when no config exists yet; actual paths live inside the config.
-_DEFAULT_CSV = Path.home() / "invoices" / "invoices.csv"
+_DEFAULT_LEDGER = Path.home() / "invoices" / "invoices.csv"
 _DEFAULT_INVOICES_DIR = Path.home() / "invoices"
 
 # Logo constraints (millimetres)
@@ -90,7 +92,7 @@ DEFAULT_CONFIG = {
         "description": "",
     },
     "storage": {
-        "csv_file": str(_DEFAULT_CSV),
+        "ledger_file": str(_DEFAULT_LEDGER),
         "invoices_dir": str(_DEFAULT_INVOICES_DIR),
     },
 }
@@ -244,6 +246,70 @@ def _atomic_write_csv(path, rows, fieldnames, default_mode=0o600):
                 pass
 
 
+def _normalize_storage_config(storage):
+    """Back-fill and normalize storage paths, preserving the legacy csv_file alias."""
+    if storage is None:
+        storage = {}
+    ledger_value = storage.get("ledger_file") or storage.get("csv_file") or str(_DEFAULT_LEDGER)
+    invoices_dir = storage.get("invoices_dir") or str(_DEFAULT_INVOICES_DIR)
+    ledger_path = str(Path(ledger_value).expanduser())
+    storage["ledger_file"] = ledger_path
+    storage["csv_file"] = ledger_path
+    storage["invoices_dir"] = str(Path(invoices_dir).expanduser())
+    return storage
+
+
+def _ledger_path_from_config(config):
+    """Return the configured invoice ledger path."""
+    storage = _normalize_storage_config(config.setdefault("storage", {}))
+    return Path(storage["ledger_file"])
+
+
+def _invoices_dir_from_config(config):
+    """Return the configured invoice output directory."""
+    storage = _normalize_storage_config(config.setdefault("storage", {}))
+    return Path(storage["invoices_dir"])
+
+
+def _open_path(path):
+    """Open a file in the platform-default application."""
+    target = Path(path).expanduser()
+    if not target.exists():
+        raise click.ClickException(f"Path not found: {target}")
+    try:
+        if sys.platform == "darwin":
+            subprocess.run(["open", str(target)], check=True)
+        elif sys.platform == "win32":
+            os.startfile(str(target))  # type: ignore[attr-defined]
+        else:
+            subprocess.run(["xdg-open", str(target)], check=True)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise click.ClickException(f"Could not open '{target}': {exc}") from exc
+    return target
+
+
+def _resolve_invoice_pdf_path(config, invoice_number):
+    """Look up the exact PDF path for an invoice number from the configured ledger."""
+    normalized_number = _validate_invoice_number(invoice_number)
+    ledger_path = _ledger_path_from_config(config)
+    if not ledger_path.exists():
+        raise click.ClickException(f"Invoice ledger not found: {ledger_path}")
+
+    with _file_lock(ledger_path):
+        with open(ledger_path, newline="", encoding="utf-8") as f:
+            for row in csv.DictReader(f):
+                if str(row.get("invoice_number") or "").strip() != normalized_number:
+                    continue
+                pdf_value = str(row.get("pdf_file") or "").strip()
+                if not pdf_value:
+                    raise click.ClickException(
+                        f"Invoice #{normalized_number} does not have a PDF path recorded in {ledger_path}."
+                    )
+                return Path(pdf_value).expanduser()
+
+    raise click.ClickException(f"Invoice #{normalized_number} not found in ledger: {ledger_path}")
+
+
 def _open_email_client(client_email, subject, body, pdf_path):
     """Open a compose window in the default mail client."""
     recipient = urllib.parse.quote(client_email, safe="@._+-")
@@ -321,12 +387,7 @@ def load_config():
     cfg["payment"].setdefault("description", "")
 
     # Back-fill the storage section for configs created before this field existed.
-    cfg.setdefault("storage", {})
-    cfg["storage"].setdefault("csv_file", str(_DEFAULT_CSV))
-    cfg["storage"].setdefault("invoices_dir", str(_DEFAULT_INVOICES_DIR))
-    # Expand ~ in paths in case the user edited the config file manually.
-    cfg["storage"]["csv_file"] = str(Path(cfg["storage"]["csv_file"]).expanduser())
-    cfg["storage"]["invoices_dir"] = str(Path(cfg["storage"]["invoices_dir"]).expanduser())
+    cfg["storage"] = _normalize_storage_config(cfg.get("storage", {}))
     return cfg
 
 
@@ -464,14 +525,16 @@ def _run_config_setup(existing=None):
     )
 
     click.echo("\n=== Storage Paths ===")
-    config["storage"]["csv_file"] = click.prompt(
-        "Invoice CSV log path",
-        default=config["storage"].get("csv_file") or str(_DEFAULT_CSV),
+    ledger_file = click.prompt(
+        "Invoice ledger path",
+        default=config["storage"].get("ledger_file") or config["storage"].get("csv_file") or str(_DEFAULT_LEDGER),
     )
+    config["storage"]["ledger_file"] = ledger_file
     config["storage"]["invoices_dir"] = click.prompt(
         "PDF output directory",
         default=config["storage"].get("invoices_dir") or str(_DEFAULT_INVOICES_DIR),
     )
+    config["storage"] = _normalize_storage_config(config["storage"])
 
     save_config(config)
     click.echo(f"\nConfig saved to '{CONFIG_FILE}'.")
@@ -764,7 +827,7 @@ def save_to_csv(invoice_number, invoice_date, config, line_items, total, pdf_fil
 
     Returns the path of the CSV file that was written.
     """
-    csv_file = config.get("storage", {}).get("csv_file") or str(_DEFAULT_CSV)
+    csv_file = str(_ledger_path_from_config(config))
     csv_path = Path(csv_file)
     # Ensure parent directory exists.
     csv_path.parent.mkdir(parents=True, exist_ok=True)
@@ -817,9 +880,36 @@ def save_to_csv(invoice_number, invoice_date, config, line_items, total, pdf_fil
 # ---------------------------------------------------------------------------
 
 
-@click.group()
-def cli():
+@click.group(invoke_without_command=True)
+@click.option("--ledger", "open_ledger", is_flag=True, help="Open the configured invoice ledger file.")
+@click.option("--invoice", "invoice_number", metavar="INVOICE_NUMBER", help="Open the PDF for a specific invoice number.")
+@click.pass_context
+def cli(ctx, open_ledger, invoice_number):
     """Invoice generator — create PDF invoices and track them in a CSV log."""
+    selected_shortcuts = int(open_ledger) + int(bool(invoice_number))
+    if selected_shortcuts > 1:
+        raise click.UsageError("Use either --ledger or --invoice, not both.")
+
+    if ctx.invoked_subcommand:
+        if selected_shortcuts:
+            raise click.UsageError("Shortcut flags cannot be combined with subcommands.")
+        return
+
+    if open_ledger:
+        config_data = load_config()
+        ledger_path = _ledger_path_from_config(config_data)
+        opened_path = _open_path(ledger_path)
+        click.echo(f"Opened invoice ledger: {opened_path}")
+        return
+
+    if invoice_number:
+        config_data = load_config()
+        pdf_path = _resolve_invoice_pdf_path(config_data, invoice_number)
+        opened_path = _open_path(pdf_path)
+        click.echo(f"Opened invoice PDF: {opened_path}")
+        return
+
+    click.echo(ctx.get_help())
 
 
 @cli.command("config")
@@ -845,8 +935,8 @@ def cmd_new(invoice_date):
     """Create a new invoice interactively."""
     config_data = load_config()
 
-    csv_file = config_data.get("storage", {}).get("csv_file") or str(_DEFAULT_CSV)
-    invoices_dir = config_data.get("storage", {}).get("invoices_dir") or str(_DEFAULT_INVOICES_DIR)
+    csv_file = str(_ledger_path_from_config(config_data))
+    invoices_dir = str(_invoices_dir_from_config(config_data))
 
     default_invoice_number = get_next_invoice_number(csv_file)
     invoice_number = default_invoice_number
@@ -947,7 +1037,7 @@ def cmd_new(invoice_date):
 
     click.echo(f"\n✓  Invoice #{invoice_number} saved to: {pdf_path}")
     click.echo(f"✓  Total due: ${total:,.2f}")
-    click.echo(f"✓  CSV log updated: {csv_used}")
+    click.echo(f"✓  Ledger updated: {csv_used}")
     
     # Offer to open email client with invoice attached
     if client.get("email"):
@@ -980,10 +1070,10 @@ def cmd_new(invoice_date):
 def cmd_status(invoice_number, status):
     """Update the status of an invoice."""
     config_data = load_config()
-    csv_file = config_data.get("storage", {}).get("csv_file") or str(_DEFAULT_CSV)
+    csv_file = str(_ledger_path_from_config(config_data))
     
     if not Path(csv_file).exists():
-        click.echo(f"No invoices found. CSV file not found: {csv_file}")
+        click.echo(f"No invoices found. Ledger file not found: {csv_file}")
         return
     
     invoice_number = _validate_invoice_number(invoice_number)
@@ -1019,7 +1109,7 @@ def cmd_status(invoice_number, status):
 def cmd_list(status):
     """List all previously generated invoices."""
     config_data = load_config()
-    csv_file = config_data.get("storage", {}).get("csv_file") or str(_DEFAULT_CSV)
+    csv_file = str(_ledger_path_from_config(config_data))
 
     if not Path(csv_file).exists():
         click.echo("No invoices found. Run 'invoice.py new' to create one.")

@@ -37,7 +37,7 @@
     "description": "Please remit payment via ACH transfer or check made payable to Jane Doe."
   },
   "storage": {
-    "csv_file": "/Users/janedoe/invoices/invoices.csv",
+    "ledger_file": "/Users/janedoe/invoices/invoices.csv",
     "invoices_dir": "/Users/janedoe/invoices"
   }
 }

@@ -7,6 +7,7 @@ Command-line invoice generator for creating PDF invoices and tracking them in a 
 - Interactive invoice creation (`invoice.py new`)
 - PDF generation with line items and totals
 - Client profiles and reusable config in `~/.invoice_config.json`
+- Quick file shortcuts for opening the configured ledger and a specific invoice PDF
 - Invoice status tracking (`Draft`, `Sent`, `Paid`, `Overdue`)
 - Filtered listing (`invoice.py list --status sent`)
 - Safer file handling: atomic writes and lock-protected CSV updates
@@ -45,13 +46,25 @@ pip install -r requirements.txt
 ./venv/bin/python invoice.py list
 ```
 
-4. Filter by status:
+4. Open the configured invoice ledger:
+
+```bash
+./venv/bin/python invoice.py --ledger
+```
+
+5. Open a specific invoice PDF:
+
+```bash
+./venv/bin/python invoice.py --invoice 2026-0001
+```
+
+6. Filter by status:
 
 ```bash
 ./venv/bin/python invoice.py list --status sent
 ```
 
-5. Update status:
+7. Update status:
 
 ```bash
 ./venv/bin/python invoice.py status 2026-0001 Paid
@@ -64,6 +77,8 @@ The repo includes `invoice-wrapper`, which runs `invoice.py` through the virtual
 Examples:
 
 ```bash
+./invoice-wrapper --ledger
+./invoice-wrapper --invoice 2026-0001
 ./invoice-wrapper list --status all
 ./invoice-wrapper new
 ```
@@ -71,6 +86,8 @@ Examples:
 ## Commands
 
 ```text
+invoice.py --ledger
+invoice.py --invoice INVOICE_NUMBER
 invoice.py config
 invoice.py new [--date YYYY-MM-DD]
 invoice.py list [--status all|draft|sent|paid|overdue]
@@ -93,7 +110,9 @@ Key config sections:
 - `payee`: your business/contact details
 - `clients`: one or more client profiles
 - `payment`: bank/payment instructions shown on invoice
-- `storage`: CSV log path and invoice output directory
+- `storage`: ledger path and invoice output directory
+
+The `storage.ledger_file` value is the exact file opened by `invoice.py --ledger`. Existing configs that still use `storage.csv_file` are migrated automatically.
 
 Address fields support literal `\n` in input and are rendered as separate lines in the PDF.
 
