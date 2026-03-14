@@ -4,11 +4,11 @@
 Generates professional PDF invoices and maintains a CSV log of all invoices.
 
 Usage:
-    python invoice.py --ledger            # Open the configured invoice ledger
-    python invoice.py --invoice 2026-0001 # Open the PDF for a specific invoice
-    python invoice.py config   # Set up payee/payer information
-    python invoice.py new      # Create a new invoice
-    python invoice.py list     # List all past invoices
+    ./invoice-wrapper --ledger            # Preferred: uses the project virtualenv automatically
+    ./invoice-wrapper --invoice 2026-0001 # Preferred: opens the PDF for a specific invoice
+    python invoice.py config              # Use only from an activated project virtualenv
+    python invoice.py new                 # Use only from an activated project virtualenv
+    python invoice.py list                # Use only from an activated project virtualenv
 """
 
 import copy

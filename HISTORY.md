@@ -3,6 +3,8 @@
 - Added root CLI shortcuts: `--ledger` opens the configured invoice ledger and `--invoice INVOICE_NUMBER` opens the exact PDF path recorded for that invoice.
 - Made the ledger path explicit in config as `storage.ledger_file` while keeping backward compatibility with legacy `storage.csv_file` values.
 - Added regression coverage for ledger-path migration, invoice PDF lookup, and the new shortcut-flag behavior.
+- Updated the docs to make virtualenv-backed execution explicit: prefer `./invoice-wrapper` for normal use, or run `python invoice.py ...` only from an activated project venv.
+- Documented the dependency pitfall behind bare `python3 invoice.py`: system interpreters may not have repo packages such as `click` installed.
 
 ## 2026-03-03
 

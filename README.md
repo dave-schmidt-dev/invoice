@@ -2,6 +2,8 @@
 
 Command-line invoice generator for creating PDF invoices and tracking them in a CSV log.
 
+Run this project through `./invoice-wrapper` or the project virtual environment. Do not use bare `python3 invoice.py` unless the virtualenv is already activated, because your system Python may not have the repo dependencies installed.
+
 ## Features
 
 - Interactive invoice creation (`invoice.py new`)
@@ -26,53 +28,67 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
+Preferred command paths:
+
+```bash
+./invoice-wrapper ...
+```
+
+or, if you already activated the virtualenv:
+
+```bash
+python invoice.py ...
+```
+
 ## Quick Start
 
 1. Configure payee/client/payment/storage:
 
 ```bash
-./venv/bin/python invoice.py config
+./invoice-wrapper config
 ```
 
 2. Create an invoice:
 
 ```bash
-./venv/bin/python invoice.py new
+./invoice-wrapper new
 ```
 
 3. List invoices:
 
 ```bash
-./venv/bin/python invoice.py list
+./invoice-wrapper list
 ```
 
 4. Open the configured invoice ledger:
 
 ```bash
-./venv/bin/python invoice.py --ledger
+./invoice-wrapper --ledger
 ```
 
 5. Open a specific invoice PDF:
 
 ```bash
-./venv/bin/python invoice.py --invoice 2026-0001
+./invoice-wrapper --invoice 2026-0001
 ```
 
 6. Filter by status:
 
 ```bash
-./venv/bin/python invoice.py list --status sent
+./invoice-wrapper list --status sent
 ```
 
 7. Update status:
 
 ```bash
-./venv/bin/python invoice.py status 2026-0001 Paid
+./invoice-wrapper status 2026-0001 Paid
 ```
 
 ## Using `invoice-wrapper`
 
 The repo includes `invoice-wrapper`, which runs `invoice.py` through the virtual environment automatically.
+
+Use this wrapper for normal CLI usage. It avoids the common failure mode where `python3` resolves to a system interpreter that does not have `click` or the other project dependencies installed.
 
 Examples:
 
@@ -86,12 +102,23 @@ Examples:
 ## Commands
 
 ```text
-invoice.py --ledger
-invoice.py --invoice INVOICE_NUMBER
-invoice.py config
-invoice.py new [--date YYYY-MM-DD]
-invoice.py list [--status all|draft|sent|paid|overdue]
-invoice.py status INVOICE_NUMBER {draft|sent|paid|overdue}
+./invoice-wrapper --ledger
+./invoice-wrapper --invoice INVOICE_NUMBER
+./invoice-wrapper config
+./invoice-wrapper new [--date YYYY-MM-DD]
+./invoice-wrapper list [--status all|draft|sent|paid|overdue]
+./invoice-wrapper status INVOICE_NUMBER {draft|sent|paid|overdue}
+```
+
+Activated-venv equivalent:
+
+```text
+python invoice.py --ledger
+python invoice.py --invoice INVOICE_NUMBER
+python invoice.py config
+python invoice.py new [--date YYYY-MM-DD]
+python invoice.py list [--status all|draft|sent|paid|overdue]
+python invoice.py status INVOICE_NUMBER {draft|sent|paid|overdue}
 ```
 
 ## Configuration
@@ -148,6 +175,12 @@ Run tests:
 
 ```bash
 ./venv/bin/python -m unittest discover -s tests -v
+```
+
+If the virtualenv is already active:
+
+```bash
+python -m unittest discover -s tests -v
 ```
 
 ## License
