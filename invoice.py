@@ -717,6 +717,8 @@ def _multi_cell_height(pdf, text, cell_width, line_h=5):
 
 
 def _payee_lines(payee):
+    """Build the From block: name + address only. Email and phone live
+    in the footer Contact block so the From and Bill To columns balance."""
     lines = [payee.get("name", "")]
     if payee.get("address"):
         lines.extend(_split_address_lines(payee["address"]))
@@ -725,11 +727,17 @@ def _payee_lines(payee):
     zip_ = payee.get("zip", "")
     if city or state or zip_:
         lines.append(f"{city}, {state} {zip_}".strip(", ").strip())
+    return [l for l in lines if l]
+
+
+def _payee_contact_lines(payee):
+    """Build the footer Contact block: email + phone only."""
+    lines = []
     if payee.get("email"):
         lines.append(payee["email"])
     if payee.get("phone"):
         lines.append(payee["phone"])
-    return [l for l in lines if l]
+    return lines
 
 
 def _client_lines(client):
@@ -903,20 +911,37 @@ def generate_pdf(invoice_number, invoice_date, config, line_items, output_path,
     if payment_description is not None:
         payment_info["description"] = payment_description
     
-    if any(payment_info.get(k) for k in ("bank_name", "routing", "account", "description")):
+    payment_lines = []
+    if payment_info.get("description"):
+        payment_lines.append(payment_info["description"])
+    if payment_info.get("bank_name"):
+        payment_lines.append(f"Bank: {payment_info['bank_name']}")
+    if payment_info.get("routing"):
+        payment_lines.append(f"Routing #: {payment_info['routing']}")
+    if payment_info.get("account"):
+        payment_lines.append(f"Account #: {payment_info['account']}")
+
+    contact_lines = _payee_contact_lines(payee)
+
+    if payment_lines or contact_lines:
         pdf.ln(12)
+        col_w = 85
+
         pdf.set_font("Helvetica", "B", 10)
-        pdf.cell(0, 5, "Payment Information:", new_x="LMARGIN", new_y="NEXT")
+        pdf.cell(col_w, 5, "Payment Information:" if payment_lines else "",
+                 new_x="RIGHT", new_y="LAST")
+        pdf.set_x(pdf.get_x() + 10)
+        pdf.cell(col_w, 5, "Contact:" if contact_lines else "",
+                 new_x="LMARGIN", new_y="NEXT")
         pdf.ln(2)
+
         pdf.set_font("Helvetica", "", 10)
-        if payment_info.get("description"):
-            pdf.cell(0, 4, payment_info["description"], new_x="LMARGIN", new_y="NEXT")
-        if payment_info.get("bank_name"):
-            pdf.cell(0, 4, f"Bank: {payment_info['bank_name']}", new_x="LMARGIN", new_y="NEXT")
-        if payment_info.get("routing"):
-            pdf.cell(0, 4, f"Routing #: {payment_info['routing']}", new_x="LMARGIN", new_y="NEXT")
-        if payment_info.get("account"):
-            pdf.cell(0, 4, f"Account #: {payment_info['account']}", new_x="LMARGIN", new_y="NEXT")
+        for i in range(max(len(payment_lines), len(contact_lines))):
+            left = payment_lines[i] if i < len(payment_lines) else ""
+            right = contact_lines[i] if i < len(contact_lines) else ""
+            pdf.cell(col_w, 4, left, new_x="RIGHT", new_y="LAST")
+            pdf.set_x(pdf.get_x() + 10)
+            pdf.cell(col_w, 4, right, new_x="LMARGIN", new_y="NEXT")
 
     pdf.output(output_path)
     return subtotal
