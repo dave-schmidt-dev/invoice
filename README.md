@@ -177,27 +177,31 @@ zd invoice --help
 
 `zd invoice <client> --month YYYY-MM` limits a new invoice to unbilled sessions and expenses in that calendar month. Other unbilled work for the same client remains available for a later invoice.
 
-`--summarize-weeks` calls the local OpenAI-compatible Gemma server at `http://127.0.0.1:8001` and uses model `mlx-community/gemma-4-26b-a4b-it-4bit` to add one-line summaries to weekly invoice line items. You can enable this by default in `~/.invoice_config.json`:
+`--summarize-weeks` adds one-line weekly summaries to invoice line items via a local OpenAI-compatible Gemma server. zd auto-starts the server when needed (`llama-server` serving a small Gemma GGUF) and shuts it down again on exit, so there is no manual server-management step. You can enable summaries by default in `~/.invoice_config.json`:
 
 ```json
 "zd": {
   "weekly_summaries": {
     "enabled": true,
-    "base_url": "http://127.0.0.1:8001",
-    "model": "mlx-community/gemma-4-26b-a4b-it-4bit",
+    "base_url": "http://127.0.0.1:8086",
+    "model": "summarizer",
+    "model_path": "/Users/you/models/narrator-bench/gemma-e2b/gemma-4-E2B-it-Q4_K_M.gguf",
+    "log_path": "/tmp/zd-summary-server.log",
     "timeout_seconds": 30
   }
 }
 ```
 
-Start the local server first from the sibling LLM workspace, for example:
+`model_path` points at a GGUF weights file. The default is a small Gemma 4 E2B (~2B active params, ~3GB at Q4_K_M) — fast enough that cold-starting the server per `zd invoice` run is unobtrusive, small enough that nothing lingers when zd exits.
 
-```bash
-cd ../llm
-./scripts/goose_local.sh --server-only gemma-4-26b-a4b-it-4bit
-```
+Requirements:
 
-If the local model server is unavailable or returns unusable output, invoice generation falls back to the plain `Week of ...` labels.
+- `llama-server` (current llama.cpp) on PATH. macOS: `brew install llama.cpp`.
+- A GGUF weights file at `model_path`.
+
+If a server is already responding at `base_url` when zd starts, zd will use it instead of spawning a new one (and won't shut it down at the end — that server belongs to someone else). If spawning fails, or if `/health` doesn't respond within the startup timeout, zd aborts cleanly. If the summary API call fails for any other reason, invoice generation falls back to the plain `Week of ...` labels.
+
+Environment overrides: `ZD_SUMMARY_BASE_URL`, `ZD_SUMMARY_MODEL`, `ZD_SUMMARY_MODEL_PATH`, `ZD_SUMMARY_LOG`, `ZD_SUMMARY_TIMEOUT`.
 
 ### Tab completion
 

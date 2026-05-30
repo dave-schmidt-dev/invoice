@@ -158,6 +158,43 @@ class ZdInvoiceTests(unittest.TestCase):
                 ["2026-03-31", "2026-05-01"],
             )
 
+    def test_invoice_status_matches_between_csv_ledger_and_zd_db(self):
+        """zd invoice writes the same status to the CSV ledger and the zd
+        DB so the two sources of truth never disagree on a fresh invoice."""
+        import csv as _csv
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path, config_path = self._seed_invoice_data(tmpdir)
+            with open(config_path) as f:
+                config = json.load(f)
+            csv_path = Path(config["storage"]["ledger_file"])
+            runner = CliRunner()
+
+            result = runner.invoke(
+                zd.cli,
+                ["invoice", "acme", "--month", "2026-04", "--date", "2026-04-30"],
+                input="y\n",
+            )
+            self.assertEqual(result.exit_code, 0, msg=result.output)
+
+            with patch.object(zd, "ZD_DB", db_path), zd.get_conn() as conn:
+                db_row = conn.execute(
+                    "SELECT invoice_number, status FROM invoices ORDER BY id DESC LIMIT 1"
+                ).fetchone()
+            self.assertIsNotNone(db_row, "expected an invoice row in the zd DB")
+
+            with open(csv_path, newline="") as f:
+                csv_rows = list(_csv.DictReader(f))
+            csv_match = next(
+                (r for r in csv_rows if r.get("invoice_number") == db_row["invoice_number"]),
+                None,
+            )
+            self.assertIsNotNone(csv_match, "expected the invoice in the CSV ledger")
+            self.assertEqual(
+                csv_match["status"], db_row["status"],
+                "CSV ledger status must match zd DB status for a fresh invoice",
+            )
+            self.assertEqual(db_row["status"], "Sent")
+
     def test_invoice_without_month_still_invoices_all_unbilled_client_items(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path, _ = self._seed_invoice_data(tmpdir)
@@ -272,7 +309,7 @@ class ZdInvoiceTests(unittest.TestCase):
 
         self.assertEqual(line_items[0]["description"], "Week of Apr 6")
 
-    def test_local_gemma_summary_uses_full_hf_model_id(self):
+    def test_local_gemma_summary_hits_configured_base_url_and_model(self):
         sessions = [
             {"work_date": "2026-04-06", "hours": 1.0, "rate": 100.0, "notes": "reviewed evidence"},
         ]
@@ -289,10 +326,74 @@ class ZdInvoiceTests(unittest.TestCase):
 
         self.assertEqual(summary, "Evidence review")
         request = mock_urlopen.call_args.args[0]
-        self.assertEqual(request.full_url, "http://127.0.0.1:8001/v1/chat/completions")
+        # Defaults: base_url = http://127.0.0.1:8086 (auto-spawned llama-server
+        # for the small gemma-e2b GGUF), model = "summarizer" (the --alias
+        # passed to llama-server). Both are overridable via env or config.
+        self.assertEqual(request.full_url, "http://127.0.0.1:8086/v1/chat/completions")
         payload = json.loads(request.data.decode("utf-8"))
-        self.assertEqual(payload["model"], "mlx-community/gemma-4-26b-a4b-it-4bit")
+        self.assertEqual(payload["model"], "summarizer")
         self.assertIn("reviewed evidence", payload["messages"][1]["content"])
+
+    def test_summary_server_context_uses_existing_server_without_spawning(self):
+        """If /health already responds, we use the existing server as-is
+        and do NOT terminate it on exit (it belongs to someone else)."""
+        settings = {
+            "base_url": "http://127.0.0.1:8086",
+            "model": "summarizer",
+            "model_path": "/dev/null",  # never read because server is "up"
+            "log_path": "/tmp/zd-summary-server.log",
+            "timeout_seconds": 30,
+        }
+        with patch.object(zd, "_server_alive", return_value=True) as alive, \
+             patch.object(zd, "_spawn_summary_server") as spawn, \
+             patch.object(zd, "_shutdown_summary_server") as shutdown:
+            with zd._summary_server_context(settings):
+                pass
+        alive.assert_called()
+        spawn.assert_not_called()
+        shutdown.assert_not_called()
+
+    def test_summary_server_context_spawns_and_tears_down_when_absent(self):
+        """If /health is down on entry, we spawn llama-server, wait for
+        readiness, run the block, and terminate the server on exit."""
+        settings = {
+            "base_url": "http://127.0.0.1:8086",
+            "model": "summarizer",
+            "model_path": "/dev/null",
+            "log_path": "/tmp/zd-summary-server.log",
+            "timeout_seconds": 30,
+        }
+        fake_proc = Mock()
+        with patch.object(zd, "_server_alive", return_value=False), \
+             patch.object(zd, "_spawn_summary_server", return_value=fake_proc) as spawn, \
+             patch.object(zd, "_wait_for_summary_server") as wait, \
+             patch.object(zd, "_shutdown_summary_server") as shutdown:
+            with zd._summary_server_context(settings):
+                pass
+        spawn.assert_called_once()
+        wait.assert_called_once_with("http://127.0.0.1:8086")
+        shutdown.assert_called_once_with(fake_proc)
+
+    def test_summary_server_context_shuts_down_on_readiness_timeout(self):
+        """If llama-server never reports /health ready, the spawned
+        process is killed before the SummaryServerError propagates."""
+        settings = {
+            "base_url": "http://127.0.0.1:8086",
+            "model": "summarizer",
+            "model_path": "/dev/null",
+            "log_path": "/tmp/zd-summary-server.log",
+            "timeout_seconds": 30,
+        }
+        fake_proc = Mock()
+        with patch.object(zd, "_server_alive", return_value=False), \
+             patch.object(zd, "_spawn_summary_server", return_value=fake_proc), \
+             patch.object(zd, "_wait_for_summary_server",
+                          side_effect=zd.SummaryServerError("timeout")), \
+             patch.object(zd, "_shutdown_summary_server") as shutdown:
+            with self.assertRaises(zd.SummaryServerError):
+                with zd._summary_server_context(settings):
+                    self.fail("body must not run when startup fails")
+        shutdown.assert_called_once_with(fake_proc)
 
     def test_local_gemma_summary_requires_notes_and_content(self):
         empty_notes_sessions = [

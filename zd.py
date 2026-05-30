@@ -18,6 +18,7 @@ Usage:
     zd clients
 """
 
+import contextlib
 import shutil
 import sqlite3
 import sys
@@ -25,6 +26,7 @@ import os
 import copy
 import json
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import date, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
@@ -70,16 +72,23 @@ INVOICE_PY = _SCRIPT_DIR / "invoice.py"
 
 CONFIG_FILE = Path.home() / ".invoice_config.json"
 
-LOCAL_SUMMARY_BASE_URL = os.environ.get("ZD_SUMMARY_BASE_URL", "http://127.0.0.1:8001")
-LOCAL_SUMMARY_MODEL = os.environ.get(
-    "ZD_SUMMARY_MODEL",
-    "mlx-community/gemma-4-26b-a4b-it-4bit",
+LOCAL_SUMMARY_BASE_URL = os.environ.get("ZD_SUMMARY_BASE_URL", "http://127.0.0.1:8086")
+LOCAL_SUMMARY_MODEL = os.environ.get("ZD_SUMMARY_MODEL", "summarizer")
+LOCAL_SUMMARY_MODEL_PATH = os.environ.get(
+    "ZD_SUMMARY_MODEL_PATH",
+    str(Path.home() / "models/narrator-bench/gemma-e2b/gemma-4-E2B-it-Q4_K_M.gguf"),
 )
+LOCAL_SUMMARY_LOG = os.environ.get("ZD_SUMMARY_LOG", "/tmp/zd-summary-server.log")
 LOCAL_SUMMARY_TIMEOUT = 30.0
+LOCAL_SUMMARY_STARTUP_TIMEOUT = 60.0
 
 
 class WeekSummaryError(Exception):
     """Raised when weekly summary generation cannot produce usable text."""
+
+
+class SummaryServerError(Exception):
+    """Raised when the local llama-server cannot be brought up for summaries."""
 
 # ---------------------------------------------------------------------------
 # DB setup
@@ -276,7 +285,11 @@ def _summary_timeout(value, default=LOCAL_SUMMARY_TIMEOUT):
 
 
 def _weekly_summary_config(config):
-    """Return normalized weekly summary settings from invoice config."""
+    """Return normalized weekly summary settings from invoice config.
+
+    Adds `model_path` (path to the GGUF weights) and `log_path` (where
+    llama-server's stdout/stderr go when we spawn it) so the auto-start
+    helper can find them without extra config plumbing."""
     summary_config = (
         config.get("zd", {})
         .get("weekly_summaries", {})
@@ -286,8 +299,125 @@ def _weekly_summary_config(config):
         "enabled": bool(summary_config.get("enabled", False)),
         "base_url": summary_config.get("base_url") or LOCAL_SUMMARY_BASE_URL,
         "model": summary_config.get("model") or LOCAL_SUMMARY_MODEL,
+        "model_path": summary_config.get("model_path") or LOCAL_SUMMARY_MODEL_PATH,
+        "log_path": summary_config.get("log_path") or LOCAL_SUMMARY_LOG,
         "timeout_seconds": _summary_timeout(summary_config.get("timeout_seconds"), default_timeout),
     }
+
+
+def _server_alive(base_url, timeout=2.0):
+    """Return True if base_url responds 200 on /health."""
+    try:
+        with urllib.request.urlopen(
+            f"{base_url.rstrip('/')}/health", timeout=timeout
+        ) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
+
+
+def _parse_host_port(base_url, default_port=8086):
+    parsed = urllib.parse.urlparse(base_url)
+    return parsed.hostname or "127.0.0.1", str(parsed.port or default_port)
+
+
+def _spawn_summary_server(model_path, base_url, alias, log_path):
+    """Spawn llama-server in the background with megalodon's locked argv
+    pattern. Returns the Popen handle. Raises SummaryServerError if the
+    binary or model file are missing."""
+    import shutil
+    import subprocess
+    if not shutil.which("llama-server"):
+        raise SummaryServerError(
+            "llama-server not found on PATH (brew install llama.cpp)."
+        )
+    if not Path(model_path).exists():
+        raise SummaryServerError(
+            f"summary model GGUF not found at {model_path}. "
+            f"Set zd.weekly_summaries.model_path in ~/.invoice_config.json "
+            f"or ZD_SUMMARY_MODEL_PATH env var."
+        )
+    host, port = _parse_host_port(base_url)
+    Path(log_path).parent.mkdir(parents=True, exist_ok=True)
+    log_file = open(log_path, "ab", buffering=0)
+    return subprocess.Popen(
+        [
+            "llama-server",
+            "-m", str(model_path),
+            "--alias", alias,
+            "--jinja",
+            "--chat-template-kwargs", '{"enable_thinking":false}',
+            "-ngl", "99",
+            "-c", "8192",
+            "--host", host,
+            "--port", port,
+        ],
+        stdout=log_file,
+        stderr=log_file,
+        start_new_session=True,  # decouple from zd's signal group
+    )
+
+
+def _wait_for_summary_server(base_url, timeout=LOCAL_SUMMARY_STARTUP_TIMEOUT, poll_interval=0.25):
+    """Block until base_url's /health returns 200 or timeout. Raises on timeout."""
+    import time as _time
+    deadline = _time.monotonic() + timeout
+    while _time.monotonic() < deadline:
+        if _server_alive(base_url, timeout=1.0):
+            return
+        _time.sleep(poll_interval)
+    raise SummaryServerError(
+        f"llama-server at {base_url} did not become ready within {timeout:.0f}s"
+    )
+
+
+def _shutdown_summary_server(proc, timeout=10.0):
+    """Terminate a spawned server. SIGTERM first, then SIGKILL if it lingers."""
+    import subprocess
+    try:
+        proc.terminate()
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        try:
+            proc.wait(timeout=5.0)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
+@contextlib.contextmanager
+def _summary_server_context(summary_settings):
+    """Ensure llama-server is up for the duration of the block.
+
+    - If a server is already responding at base_url, use it as-is. Do NOT
+      shut it down on exit — it belongs to someone else.
+    - Otherwise spawn llama-server with the configured GGUF model, wait
+      for /health to pass, and terminate it when the block exits."""
+    base_url = summary_settings["base_url"]
+    we_started = False
+    proc = None
+    if not _server_alive(base_url):
+        click.echo("  Starting local llama-server for summaries (cold start)...")
+        proc = _spawn_summary_server(
+            model_path=summary_settings["model_path"],
+            base_url=base_url,
+            alias=summary_settings["model"],
+            log_path=summary_settings["log_path"],
+        )
+        we_started = True
+        try:
+            _wait_for_summary_server(base_url)
+        except SummaryServerError:
+            _shutdown_summary_server(proc)
+            raise
+    try:
+        yield
+    finally:
+        if we_started and proc is not None:
+            click.echo("  Stopping local llama-server.")
+            _shutdown_summary_server(proc)
 
 
 def summarize_week_with_local_gemma(
@@ -970,7 +1100,11 @@ def cmd_invoice(client, invoice_date, invoice_month, summarize_weeks, regenerate
             ).fetchall()
 
             summary_func = _summary_func if effective_summarize_weeks else None
-            line_items = group_sessions_by_week(sessions, summary_provider=summary_func)
+            if effective_summarize_weeks:
+                with _summary_server_context(summary_settings):
+                    line_items = group_sessions_by_week(sessions, summary_provider=summary_func)
+            else:
+                line_items = group_sessions_by_week(sessions, summary_provider=summary_func)
             for e in expenses:
                 line_items.append({
                     "description": f"Expense: {e['description']}",
@@ -1069,11 +1203,17 @@ def cmd_invoice(client, invoice_date, invoice_month, summarize_weeks, regenerate
             click.echo(f"  No unbilled sessions or expenses for {c['name']}{scope}.")
             return
 
-        # Build line items grouped by week
+        # Build line items grouped by week. When summarization is enabled,
+        # ensure the local llama-server is up for the entire grouping pass
+        # — _summary_server_context spawns it cold if needed and tears it
+        # down when we exit, so no orphan server lingers.
         summary_func = _summary_func if effective_summarize_weeks else None
         if effective_summarize_weeks:
             click.echo("  Summarizing weekly line items with local Gemma model...")
-        line_items = group_sessions_by_week(sessions, summary_provider=summary_func)
+            with _summary_server_context(summary_settings):
+                line_items = group_sessions_by_week(sessions, summary_provider=summary_func)
+        else:
+            line_items = group_sessions_by_week(sessions, summary_provider=summary_func)
 
         # Add expense line items if any
         for e in expenses:
@@ -1136,10 +1276,14 @@ def cmd_invoice(client, invoice_date, invoice_month, summarize_weeks, regenerate
             client=matched_client, payment_terms="Net 30",
         )
 
-        # Save to invoice.py's CSV ledger
+        # Save to invoice.py's CSV ledger. zd's invoice flow generates AND
+        # finalizes the PDF in one step, so the CSV row should land as Sent
+        # — matching the zd DB row inserted just below. Without this the
+        # CSV stays at the save_to_csv default ("Draft") until `zd paid`
+        # syncs both ledgers to Paid, masking the mismatch.
         inv_mod.save_to_csv(
             invoice_number, invoice_date, config, line_items,
-            actual_total, pdf_path, client=matched_client,
+            actual_total, pdf_path, client=matched_client, status="Sent",
         )
 
         # Record in zd DB and mark sessions/expenses as billed

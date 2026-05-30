@@ -37,23 +37,15 @@ Status key: pending | in progress | done | blocked
 
 ## 2026-05-30 - Follow-ups surfaced during May invoicing
 
-### Task 1: Auto-start Ollama when `--summarize-weeks` runs
-- **Status:** pending
-- **Description:** `summarize_week_with_local_gemma` currently fails with `urlopen error [Errno 61] Connection refused` if Ollama is not already running, causing `zd invoice --summarize-weeks` to fall back silently to plain week labels. Expected behavior: detect the server is down, start it in the background, wait for the API to be ready, run summarization, and optionally shut it down if we started it.
-- **Blocked by:** none
-- **Tests:** integration test with Ollama stopped; assert summaries succeed end-to-end.
-- **Done when:**
-  - Running `zd invoice <client> --summarize-weeks` works with Ollama not running.
-  - Summaries are produced (not the fallback labels).
-  - If we started Ollama, we shut it down cleanly at the end.
+### Task 1: Auto-start llama-server when `--summarize-weeks` runs
+- **Status:** done (2026-05-30)
+- **Description:** `summarize_week_with_local_gemma` previously failed with `urlopen error [Errno 61] Connection refused` if the local server was not already running, silently falling back to plain week labels. (Originally mis-tagged as "Ollama"; the actual runtime is `llama-server`.)
+- **Resolution:** Added `_summary_server_context` in `zd.py` that probes `/health`, spawns `llama-server` with megalodon's locked argv only if needed, waits for readiness, and tears the server back down on exit. Switched the default model to the small Gemma 4 E2B GGUF (~2B active) for fast cold start. Tests cover the three branches (server already up, spawn-and-teardown, readiness-timeout cleanup).
 
 ### Task 2: Fix CSV ledger / zd DB `status` mismatch on invoice creation
-- **Status:** pending
-- **Description:** When `cmd_invoice` creates a new invoice, the zd DB row is inserted with `status='Sent'` (`zd.py:1146-1150`) but the CSV ledger row written by `inv_mod.save_to_csv` lands with `status='Draft'`. `zd paid <number>` syncs both to `Paid`, but until then the two ledgers disagree. Pick one default ('Sent' is more accurate for a generated-and-saved invoice) and align both writes.
-- **Blocked by:** none
-- **Tests:** unit test that creates an invoice via `cmd_invoice` and asserts CSV row and DB row have matching `status`.
-- **Done when:**
-  - New invoices show the same `status` in the CSV ledger and the zd DB.
+- **Status:** done (2026-05-30)
+- **Description:** zd DB row was inserted with `status='Sent'` (`zd.py:1146-1150`) but the CSV ledger row from `inv_mod.save_to_csv` defaulted to `status='Draft'`, leaving the two ledgers inconsistent until `zd paid` synced both to `Paid`.
+- **Resolution:** Added a `status` kwarg to `save_to_csv` (default `"Draft"` so interactive `invoice.py new` is unchanged). `cmd_invoice` now passes `status="Sent"`. Regression test `test_invoice_status_matches_between_csv_ledger_and_zd_db` asserts CSV status equals DB status after a fresh `zd invoice` run.
 
 ### Task 3: Repair the project venv's broken pytest install
 - **Status:** pending

@@ -1,3 +1,23 @@
+## 2026-05-30 (later)
+
+- Aligned `zd invoice`'s CSV ledger and zd SQLite DB on the same `status`
+  for fresh invoices: `save_to_csv` now accepts a `status` kwarg (default
+  `"Draft"` so interactive `invoice.py new` is unchanged), and `cmd_invoice`
+  passes `status="Sent"`. Added a regression test that asserts CSV row
+  status equals zd DB row status after a `zd invoice` run.
+- Replaced the heavyweight default summary model (`gemma-4-26b-a4b-it-4bit`,
+  26B MoE on MLX, port 8001) with the small Gemma 4 E2B GGUF that megalodon
+  already validated as "good enough for one-line summaries" (~2B active,
+  ~3GB at Q4_K_M, served via `llama-server` on port 8086).
+- Added an auto-start / auto-teardown context manager around `--summarize-
+  weeks`: zd probes `<base_url>/health` first, spawns `llama-server` with
+  megalodon's locked argv only if the server is down, waits for readiness,
+  runs summarization, and tears the server back down on exit so nothing
+  lingers. If a server is already up, zd uses it and leaves it alone.
+- New env overrides for the summary path: `ZD_SUMMARY_BASE_URL`,
+  `ZD_SUMMARY_MODEL`, `ZD_SUMMARY_MODEL_PATH`, `ZD_SUMMARY_LOG`. Config
+  example and README updated accordingly.
+
 ## 2026-05-30
 
 - Standardized the invoice PDF's section headers to title case (`From:`, `Bill To:`, `Payment Information:`), added a small gap between each header and its data lines, and tightened the data-line spacing so all three blocks have the same visual rhythm.

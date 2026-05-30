@@ -927,8 +927,13 @@ def generate_pdf(invoice_number, invoice_date, config, line_items, output_path,
 # ---------------------------------------------------------------------------
 
 
-def save_to_csv(invoice_number, invoice_date, config, line_items, total, pdf_file, client=None):
+def save_to_csv(invoice_number, invoice_date, config, line_items, total, pdf_file, client=None, status="Draft"):
     """Append the invoice summary to the CSV log.
+
+    `status` defaults to "Draft" so interactive `invoice.py new` keeps its
+    existing behavior. Callers that generate-and-finalize the invoice in a
+    single step (e.g. `zd invoice`) should pass status="Sent" so the CSV
+    ledger and downstream stores agree on the invoice's actual state.
 
     Returns the path of the CSV file that was written.
     """
@@ -954,7 +959,7 @@ def save_to_csv(invoice_number, invoice_date, config, line_items, total, pdf_fil
         "line_items": _csv_safe(items_str),
         "total": f"{_to_money_decimal(total, 'total'):.2f}",
         "pdf_file": _csv_safe(pdf_file),
-        "status": "Draft",  # Default status for new invoices
+        "status": status,
     }
 
     _backup_file(csv_path)
