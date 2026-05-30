@@ -1,0 +1,52 @@
+{
+  "invoice_header": {
+    "title": "INVOICE",
+    "logo_path": "/Users/janedoe/logo.png"
+  },
+  "payee": {
+    "name": "Jane Doe",
+    "address": "123 Freelancer Lane",
+    "city": "San Francisco",
+    "state": "CA",
+    "zip": "94105",
+    "email": "jane@example.com",
+    "phone": "555-867-5309"
+  },
+  "clients": [
+    {
+      "name": "Acme Corp",
+      "address": "456 Corporate Blvd",
+      "city": "New York",
+      "state": "NY",
+      "zip": "10001",
+      "contact": "John Smith"
+    },
+    {
+      "name": "Globex Inc",
+      "address": "789 Enterprise Ave",
+      "city": "Springfield",
+      "state": "IL",
+      "zip": "62701",
+      "contact": "Jane Jones"
+    }
+  ],
+  "payment": {
+    "bank_name": "First National Bank",
+    "routing": "021000021",
+    "account": "1234567890",
+    "description": "Please remit payment via ACH transfer or check made payable to Jane Doe."
+  },
+  "storage": {
+    "ledger_file": "/Users/janedoe/invoices/invoices.csv",
+    "invoices_dir": "/Users/janedoe/invoices",
+    "worklog_file": "/Users/janedoe/notes/Worklog.md"
+  },
+  "zd": {
+    "weekly_summaries": {
+      "enabled": false,
+      "base_url": "http://127.0.0.1:8001",
+      "model": "mlx-community/gemma-4-26b-a4b-it-4bit",
+      "timeout_seconds": 30
+    }
+  }
+}

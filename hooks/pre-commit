@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# Pre-commit: refuse staged diffs that introduce known PII / sensitive
+# patterns. See README.md "No PII in the project" for the underlying rule.
+#
+# Runs in well under a second; safe to keep enabled for every commit.
+# To bypass intentionally, fix the staged content — do NOT use --no-verify
+# as a shortcut.
+
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+patterns="$repo_root/hooks/pii-patterns.txt"
+
+if [[ ! -f "$patterns" ]]; then
+    echo "[pre-commit] WARNING: $patterns missing — skipping PII guard." >&2
+    exit 0
+fi
+
+# The hook directory hosts the pattern file itself plus this script and
+# its docs — those legitimately contain the strings we are guarding
+# against. Exclude `hooks/` from scanning to avoid the obvious self-trip.
+staged_diff="$(git diff --cached --no-color -U0 -- ':(exclude)hooks/*')"
+if [[ -z "$staged_diff" ]]; then
+    exit 0
+fi
+
+# Only inspect ADDED lines (start with '+', not '+++' file headers).
+added_lines="$(printf '%s\n' "$staged_diff" | grep -E '^\+[^+]' || true)"
+if [[ -z "$added_lines" ]]; then
+    exit 0
+fi
+
+# Strip blank lines and comments from the pattern file. Each remaining
+# line is treated as a case-insensitive grep -E pattern.
+pattern_list="$(grep -Ev '^[[:space:]]*(#|$)' "$patterns" || true)"
+if [[ -z "$pattern_list" ]]; then
+    exit 0
+fi
+
+hits="$(printf '%s\n' "$added_lines" \
+    | grep -niE -f <(printf '%s\n' "$pattern_list") \
+    || true)"
+
+if [[ -n "$hits" ]]; then
+    cat >&2 <<EOF
+
+[pre-commit] BLOCKED: staged content contains forbidden PII / sensitive patterns.
+
+Matches (file-line-prefix is from the diff hunk, not the source file line):
+$hits
+
+Rule: README.md → "No PII in the project".
+Pattern list: $patterns
+
+Fix the staged content. Do NOT bypass with --no-verify.
+
+EOF
+    exit 1
+fi
+
+exit 0

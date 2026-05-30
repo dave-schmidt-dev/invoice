@@ -1,0 +1,21 @@
+# PII / sensitive-content patterns enforced by hooks/pre-commit.
+#
+# - One case-insensitive `grep -E` pattern per non-comment, non-blank line.
+# - The hook matches against ADDED lines in the staged diff only.
+# - Add a new pattern the moment you discover a new leak vector.
+# - Keep patterns specific enough to avoid false positives, broad enough to
+#   catch obvious variants (use \s* for optional spaces, \b for word boundaries).
+
+# --- Specific third-party people known to have appeared in scratch work ---
+justin\s*maile
+amjad
+razek
+
+# --- Subject-matter / case identifiers ---
+\bokx\b
+
+# --- Real client / org identifiers (use acme / globex placeholders instead) ---
+cipher\s*blade
+
+# --- Personal Apple Mail privacy-relay address that leaked into older commits ---
+royalty_naps

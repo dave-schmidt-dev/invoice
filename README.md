@@ -1,0 +1,367 @@
+# invoice
+
+Command-line invoice generator for creating PDF invoices and tracking them in a CSV log.
+
+Run this project through `./invoice-wrapper` or the project virtual environment. Do not use bare `python3 invoice.py` unless the virtualenv is already activated, because your system Python may not have the repo dependencies installed.
+
+## Features
+
+**invoice.py:**
+- Interactive invoice creation (`invoice.py new`)
+- PDF generation with line items and totals
+- Client profiles and reusable config in `~/.invoice_config.json`
+- Quick file shortcuts for opening the configured ledger and a specific invoice PDF
+- Invoice status tracking (`Draft`, `Sent`, `Paid`, `Overdue`)
+- Filtered listing (`invoice.py list --status sent`)
+- Safer file handling: atomic writes and lock-protected CSV updates
+- Money handling with `Decimal` for consistent currency math
+
+**zd (optional time tracker):**
+- Log billable sessions and expenses per client via SQLite DB
+- Edit sessions and expenses after the fact (`zd edit`, `zd edit-expense`)
+- Automatic grouping of sessions into calendar-week line items
+- PDF invoice generation that integrates with invoice.py
+- Month-scoped invoicing for a single client (`zd invoice acme --month 2026-04`)
+- Optional local Gemma weekly summaries for invoice line items (`--summarize-weeks`)
+- Regenerate invoices after config or data corrections (`--regenerate`)
+- Sync paid status back to invoice.py's CSV ledger
+- Auto-sync new clients to `~/.invoice_config.json` for invoice generation
+- Automatic timestamped backups of DB, config, and CSV before writes (last 20 kept)
+- Portable wrappers: both `invoice-wrapper` and `zd-wrapper` resolve symlinks for cross-computer compatibility
+
+## Requirements
+
+- Python 3.8+
+- Dependencies in `requirements.txt`
+
+Install:
+
+```bash
+python -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
+
+Preferred command paths:
+
+```bash
+./invoice-wrapper ...
+```
+
+or, if you already activated the virtualenv:
+
+```bash
+python invoice.py ...
+```
+
+## Quick Start
+
+1. Configure payee/client/payment/storage:
+
+```bash
+./invoice-wrapper config
+```
+
+2. Create an invoice:
+
+```bash
+./invoice-wrapper new
+```
+
+3. List invoices:
+
+```bash
+./invoice-wrapper list
+```
+
+4. Open the configured invoice ledger:
+
+```bash
+./invoice-wrapper --ledger
+```
+
+5. Open a specific invoice PDF:
+
+```bash
+./invoice-wrapper --invoice 2026-0001
+```
+
+6. Filter by status:
+
+```bash
+./invoice-wrapper list --status sent
+```
+
+7. Update status:
+
+```bash
+./invoice-wrapper status 2026-0001 Paid
+```
+
+## Using `invoice-wrapper`
+
+The repo includes `invoice-wrapper`, which runs `invoice.py` through the virtual environment automatically.
+
+Use this wrapper for normal CLI usage. It avoids the common failure mode where `python3` resolves to a system interpreter that does not have `click` or the other project dependencies installed.
+
+Examples:
+
+```bash
+./invoice-wrapper --ledger
+./invoice-wrapper --invoice 2026-0001
+./invoice-wrapper list --status all
+./invoice-wrapper new
+./zd-wrapper invoice acme --month 2026-04
+./zd-wrapper invoice acme --month 2026-04 --summarize-weeks
+```
+
+## Time Tracking with `zd`
+
+This project includes **zd** (Zero Delta), an optional time tracker that logs billable sessions and expenses per client, then generates invoices by calling `invoice.py`'s PDF/CSV machinery directly.
+
+zd maintains a SQLite database at `~/.zd.db` with clients, sessions, expenses, and invoice records. When you generate an invoice through zd, it creates the PDF via `invoice.py`, appends to the CSV ledger, and marks sessions/expenses as billed.
+
+Setup and typical workflow:
+
+```bash
+# One-time: add a client with hourly rate
+zd add-client acme "Acme Corp" 95.00
+
+# As you work, log sessions
+zd log acme 2.0 "sprint planning"
+zd log acme 1.5 "dev work" --date 2026-03-18
+
+# Log reimbursable expenses
+zd expense acme 42.00 "domain renewal"
+
+# Review unbilled totals
+zd status
+
+# Inspect line items before invoicing (one client)
+zd sessions acme
+
+# Inspect all clients at once
+zd sessions
+zd sessions --all   # include already-billed sessions
+
+# Edit a session (use zd sessions to find the ID)
+zd edit 14 --date 2026-03-20
+zd edit 14 --hours 2.0 --notes "corrected"
+zd edit-expense 3 --amount 50.00
+
+# Generate invoice PDF (groups sessions by week)
+zd invoice acme
+
+# Generate a month-scoped invoice for one client
+zd invoice acme --month 2026-04 --date 2026-04-30
+
+# Generate month-scoped invoice with local Gemma weekly summaries
+zd invoice acme --month 2026-04 --date 2026-04-30 --summarize-weeks
+
+# Regenerate an existing invoice (e.g. after fixing config or editing sessions)
+zd invoice acme --regenerate 2026-0002
+
+# Mark paid when check arrives
+zd paid 2026-0001
+```
+
+The `zd sessions` command shows an ID column for each session — use these IDs with `zd edit`. Omitting the client argument shows sessions across all clients; `--all` includes already-billed sessions.
+
+Run `zd --help` for a complete command reference with examples.
+
+For invoice-specific options, run:
+
+```bash
+zd invoice --help
+```
+
+`zd invoice <client> --month YYYY-MM` limits a new invoice to unbilled sessions and expenses in that calendar month. Other unbilled work for the same client remains available for a later invoice.
+
+`--summarize-weeks` calls the local OpenAI-compatible Gemma server at `http://127.0.0.1:8001` and uses model `mlx-community/gemma-4-26b-a4b-it-4bit` to add one-line summaries to weekly invoice line items. You can enable this by default in `~/.invoice_config.json`:
+
+```json
+"zd": {
+  "weekly_summaries": {
+    "enabled": true,
+    "base_url": "http://127.0.0.1:8001",
+    "model": "mlx-community/gemma-4-26b-a4b-it-4bit",
+    "timeout_seconds": 30
+  }
+}
+```
+
+Start the local server first from the sibling LLM workspace, for example:
+
+```bash
+cd ../llm
+./scripts/goose_local.sh --server-only gemma-4-26b-a4b-it-4bit
+```
+
+If the local model server is unavailable or returns unusable output, invoice generation falls back to the plain `Week of ...` labels.
+
+### Tab completion
+
+Add to `~/.zshrc` (after `compinit`):
+
+```zsh
+autoload -Uz compinit && compinit
+eval "$(_ZD_COMPLETE=zsh_source zd)"
+```
+
+For bash, add to `~/.bash_profile`:
+
+```bash
+eval "$(_ZD_COMPLETE=bash_source zd)"
+```
+
+Then `source` the file. Tab completion works for subcommands, flags, and client names.
+
+### Worklog
+
+zd appends a structured entry to a markdown worklog after every action. Configure the path in `~/.invoice_config.json`:
+
+```json
+"storage": {
+  "worklog_file": "/path/to/your/Worklog.md"
+}
+```
+
+If `worklog_file` is unset, logging is silently skipped.
+
+## Commands
+
+```text
+./invoice-wrapper --ledger
+./invoice-wrapper --invoice INVOICE_NUMBER
+./invoice-wrapper config
+./invoice-wrapper new [--date YYYY-MM-DD]
+./invoice-wrapper list [--status all|draft|sent|paid|overdue]
+./invoice-wrapper status INVOICE_NUMBER {draft|sent|paid|overdue}
+```
+
+Activated-venv equivalent:
+
+```text
+python invoice.py --ledger
+python invoice.py --invoice INVOICE_NUMBER
+python invoice.py config
+python invoice.py new [--date YYYY-MM-DD]
+python invoice.py list [--status all|draft|sent|paid|overdue]
+python invoice.py status INVOICE_NUMBER {draft|sent|paid|overdue}
+```
+
+## Configuration
+
+**invoice.py** runtime config is stored at:
+
+```text
+~/.invoice_config.json
+```
+
+See [`config.example.json`](config.example.json) for a full template.
+
+**zd** maintains its own database at:
+
+```text
+~/.zd.db  (SQLite)
+```
+
+When zd generates invoices, it reads from `~/.invoice_config.json` to match clients and route PDF output, so both tools share the same config file.
+
+Key config sections:
+
+- `invoice_header`: title and optional logo path
+- `payee`: your business/contact details
+- `clients`: one or more client profiles
+- `payment`: bank/payment instructions shown on invoice
+- `storage`: ledger path and invoice output directory
+
+The `storage.ledger_file` value is the exact file opened by `invoice.py --ledger`. Existing configs that still use `storage.csv_file` are migrated automatically.
+
+Address fields support literal `\n` in input and are rendered as separate lines in the PDF.
+
+## CSV Log Format
+
+| Column | Description | Example |
+|---|---|---|
+| `invoice_number` | Invoice identifier | `2026-0001` |
+| `date` | Invoice date (ISO-8601) | `2026-03-03` |
+| `payee_name` | Payee name/company | `Acme Corporation` |
+| `payer_name` | Client name/company | `Globex International` |
+| `line_items` | Flattened line-item summary | `Website redesign (12 hrs @ $150.00/hr)` |
+| `total` | Total amount (2 decimals, no currency symbol) | `2175.00` |
+| `pdf_file` | Full path to generated PDF | `/Users/you/invoices/Acme_Invoice_2026-0001.pdf` |
+| `status` | Invoice lifecycle status | `Draft` |
+
+### Backups
+
+Both `zd` and `invoice.py` automatically create timestamped backups before writing to `~/.zd.db`, `~/.invoice_config.json`, or the CSV ledger. Backups are named like `.zd.db.20260324-174500.bak` and the last 20 are kept per file; older ones are pruned automatically.
+
+## Security and Data-Safety Notes
+
+- Invoice numbers are validated to safe characters.
+- Filename components are sanitized before writing PDFs.
+- CSV writes are lock-protected to reduce race conditions.
+- Critical rewrites use atomic replace patterns.
+- CSV text fields are protected against spreadsheet formula injection.
+- Automatic backups before every destructive write (last 20 retained).
+
+### No PII in the project
+
+**Hard rule: no personally identifiable information or real-world client data
+in the repository.** This applies to every committed artifact — source, tests,
+fixtures, docs, HISTORY, TASKS, commit messages, branch names, and PR bodies.
+
+Specifically, never commit:
+
+- Real third-party names (people, contacts, counsel, counterparties).
+- Real-world client / company names that identify an actual engagement. Use
+  `acme` / `Acme Corp` and `globex` / `Globex Inc` as example fixtures.
+- Real email addresses, phone numbers, or postal addresses (yours or others').
+- Internal invoice numbers, contract terms, hourly rates, retainer amounts,
+  or hours worked tied to a real engagement.
+- Anything found in `~/.zd.db`, `~/.invoice_config.json`, or any generated
+  PDF — those files live outside the repo deliberately and stay outside.
+
+If you find yourself reaching for a real value to make an example concrete,
+substitute a placeholder (`acme`, `globex`, `you@example.com`, `123 Main St`,
+`$100.00`). `config.example.json` is the canonical source of sanitized
+placeholders.
+
+A version-controlled pre-commit hook (`hooks/pre-commit`) automatically blocks
+any staged diff that adds content matching patterns in `hooks/pii-patterns.txt`.
+Install it on this clone with:
+
+```bash
+git config core.hooksPath hooks
+```
+
+If the hook blocks, fix the staged content — do not bypass with `--no-verify`.
+When you discover a new leak vector, add a pattern to `hooks/pii-patterns.txt`
+in the same commit that scrubs the existing content.
+
+If PII has already been pushed, raise it immediately — removing it requires
+rewriting history and a force-push, both of which need an explicit decision.
+
+## Known Limitations
+
+- On macOS, Apple Mail compose includes attachment automatically.
+- On Linux/Windows, the default mail client opens via `mailto:` and may require manual attachment.
+
+## Development
+
+Run tests:
+
+```bash
+./venv/bin/python -m unittest discover -s tests -v
+```
+
+If the virtualenv is already active:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+## License
+
+See [LICENSE](LICENSE).

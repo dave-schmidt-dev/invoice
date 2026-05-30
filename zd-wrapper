@@ -1,0 +1,29 @@
+#!/bin/bash
+# Wrapper for zd.py — mirrors the invoice-wrapper pattern.
+# Symlink this to ~/.local/bin/zd for global access.
+
+# Resolve symlink chain to find the real project directory
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+    DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+    SOURCE="$(readlink "$SOURCE")"
+    [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+PROJECT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+
+if [[ "$VIRTUAL_ENV" != "" && -x "$VIRTUAL_ENV/bin/python" ]]; then
+    "$VIRTUAL_ENV/bin/python" "$PROJECT_DIR/zd.py" "$@"
+else
+    VENV="$PROJECT_DIR/venv"
+    if [[ -d "$VENV" ]]; then
+        "$VENV/bin/python" "$PROJECT_DIR/zd.py" "$@"
+    else
+        echo "Virtual environment not found at: $VENV"
+        echo "Please run:"
+        echo "  cd $PROJECT_DIR"
+        echo "  python -m venv venv"
+        echo "  source venv/bin/activate"
+        echo "  pip install -r requirements.txt"
+        exit 1
+    fi
+fi
