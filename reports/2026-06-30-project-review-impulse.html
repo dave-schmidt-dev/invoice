@@ -1,0 +1,1296 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Whole-project code review — invoice / zd — 2026-06-30</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:ital,wght@0,400..800;1,400..800&family=JetBrains+Mono:ital,wght@0,400..700;1,400..700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --paper:#0f1419;--paper-deep:#1a1f26;--paper-edge:#2a323d;
+    --ink:#e4e4e4;--ink-soft:#c0c5cd;--sepia:#8b95a5;--sepia-mute:#5c6470;
+    --fold:#2a323d;--hair:#3a4453;
+    --stamp:#f06464;--stamp-deep:#e04848;--stamp-wash:#3a1d1d;
+    --verify:#7ab85a;--verify-wash:#1f2d18;
+    --chart:#5a9eff;--chart-wash:#1a2438;
+    --edit:#f0c878;--edit-wash:#332810;
+    --code-bg:#000;--code-fg:#e4e4e4;--code-mute:#5c6470;
+    --serif:'Inter',-apple-system,system-ui,sans-serif;
+    --body:'Inter',-apple-system,system-ui,sans-serif;
+    --mono:'JetBrains Mono','SF Mono',Menlo,monospace;
+  }
+  *,*::before,*::after{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{margin:0;font-family:var(--body);font-size:16.5px;line-height:1.6;color:var(--ink);background:var(--paper);
+    text-rendering:optimizeLegibility;font-feature-settings:"kern" 1,"liga" 1,"calt" 1}
+  ::selection{background:var(--ink);color:var(--paper)}
+  a{color:var(--chart);text-decoration:none;border-bottom:1px solid currentColor}
+  a:hover{color:var(--stamp)}
+
+  /* Masthead --------------------------------------------------------------- */
+  .masthead{border-bottom:2px solid var(--paper-edge);padding:16px 32px 12px;background:var(--paper);position:sticky;top:0;z-index:50;box-shadow:0 1px 0 rgba(0,0,0,.4)}
+  .masthead-grid{display:grid;grid-template-columns:1fr auto 1fr;gap:28px;align-items:center;max-width:1000px;margin:0 auto}
+  .masthead-l,.masthead-r{font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--sepia);line-height:1.45}
+  .masthead-r{text-align:right}
+  .masthead-l strong,.masthead-r strong{color:var(--ink);font-weight:600}
+  .masthead-c{font-family:var(--serif);font-weight:700;font-size:19px;letter-spacing:-.01em;color:var(--ink);white-space:nowrap}
+
+  /* Layout ----------------------------------------------------------------- */
+  main{max-width:960px;margin:0 auto;padding:44px 32px 96px}
+
+  /* Hero ------------------------------------------------------------------- */
+  .hero{margin-bottom:32px;border-bottom:1px solid var(--fold);padding-bottom:26px}
+  .hero-eyebrow{font-family:var(--mono);font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--stamp);margin:0 0 14px}
+  .hero-eyebrow::before{content:'§ ';color:var(--sepia)}
+  .hero-title{font-family:var(--serif);font-weight:700;font-size:clamp(28px,3.8vw,40px);line-height:1.15;letter-spacing:-.018em;margin:0 0 20px;color:var(--ink);max-width:28ch}
+  .hero-title em{font-style:normal;color:var(--stamp)}
+  .hero-lede{font-family:var(--body);font-size:17.5px;line-height:1.6;max-width:72ch;color:var(--ink-soft);margin:0 0 14px}
+  .hero-lede em{color:var(--ink);font-style:normal}
+  .hero-lede strong{color:var(--ink);font-weight:600}
+
+  /* TOC -------------------------------------------------------------------- */
+  .toc{display:grid;grid-template-columns:repeat(2,1fr);gap:0;margin:22px 0 0;border:1px solid var(--fold);background:rgba(255,255,255,.02)}
+  .toc-item{padding:10px 14px;border-right:1px solid var(--fold);border-bottom:1px solid var(--fold);display:grid;grid-template-columns:32px 1fr auto;gap:10px;align-items:center}
+  .toc-item:nth-child(2n){border-right:none}
+  .toc-item:nth-last-child(-n+2){border-bottom:none}
+  .toc-num{font-family:var(--mono);font-weight:700;font-size:19px;color:var(--stamp);line-height:1}
+  .toc-title{font-family:var(--body);font-weight:600;font-size:14.5px;color:var(--ink);line-height:1.25}
+  .toc-title a{color:var(--ink);border-bottom:none}
+  .toc-title a:hover{color:var(--stamp)}
+  .toc-stat{font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--sepia);text-align:right}
+  .toc-stat.open{color:var(--edit)}
+  .toc-stat.decided{color:var(--verify)}
+  .toc-stat.blocked{color:var(--stamp)}
+  .toc-stat.info{color:var(--sepia-mute)}
+
+  /* Terminology fold ------------------------------------------------------- */
+  .terminology{border:1px solid var(--paper-edge);background:var(--paper-deep);padding:16px 20px;margin:22px 0 0;font-size:15px;line-height:1.55}
+  .terminology summary{font-family:var(--mono);font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--stamp);font-weight:700;cursor:pointer;list-style:none;padding:0}
+  .terminology summary::before{content:'▸ ';font-family:var(--mono);color:var(--sepia)}
+  .terminology[open] summary::before{content:'▾ '}
+  .terminology dl{margin:14px 0 0;display:grid;grid-template-columns:170px 1fr;gap:8px 18px}
+  .terminology dt{font-family:var(--mono);font-size:12.5px;color:var(--ink);font-weight:600;letter-spacing:.02em}
+  .terminology dd{margin:0;color:var(--ink-soft);font-size:14.5px;line-height:1.5}
+  .terminology dd strong{color:var(--ink)}
+
+  /* Chapter heads ---------------------------------------------------------- */
+  h2.ch{font-family:var(--serif);font-weight:700;font-size:26px;letter-spacing:-.012em;margin:40px 0 6px;color:var(--ink);padding-bottom:6px;border-bottom:2px solid var(--paper-edge);line-height:1.2;scroll-margin-top:90px}
+  h2.ch em{font-style:normal;color:var(--stamp)}
+  h2.ch .num{font-family:var(--mono);font-size:13px;letter-spacing:.1em;color:var(--stamp);font-weight:700;display:block;margin-bottom:6px;text-transform:uppercase}
+  .ch-meta{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--sepia);margin:0 0 20px}
+  .ch-meta strong{color:var(--ink)}
+  .ch-meta .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin:0 6px 0 0;vertical-align:1px;background:var(--stamp)}
+
+  /* Section heads (the 7 standard sections) -------------------------------- */
+  h3.s{font-family:var(--serif);font-weight:600;font-size:18px;letter-spacing:-.006em;margin:26px 0 8px;color:var(--ink);line-height:1.3}
+  h3.s::before{content:'';display:inline-block;width:13px;height:13px;background:var(--stamp);margin-right:9px;vertical-align:1px}
+  h3.s.setup::before{background:var(--sepia)}
+  h3.s.current::before{background:var(--chart)}
+  h3.s.ask::before{background:var(--edit)}
+  h3.s.ran::before{background:var(--ink-soft)}
+  h3.s.found::before{background:var(--verify)}
+  h3.s.paths::before{background:var(--stamp)}
+  h3.s.action::before{background:var(--stamp-deep)}
+
+  .ch-section p{margin:10px 0;line-height:1.62}
+  .ch-section p strong{color:var(--ink);font-weight:600}
+  .ch-section p em{color:var(--ink);font-style:normal}
+  .ch-section ul,.ch-section ol{margin:10px 0 14px 24px;padding:0}
+  .ch-section li{margin:6px 0;line-height:1.55}
+  .ch-section li strong{color:var(--ink);font-weight:600}
+
+  /* Quote box --------------------------------------------------------------- */
+  .quote-box{border-left:3px solid var(--chart);background:var(--chart-wash);padding:14px 18px;margin:14px 0;color:var(--ink-soft);font-size:15.5px;line-height:1.5}
+  .quote-box strong{color:var(--ink);font-weight:600}
+  .quote-box .src{display:block;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;color:var(--sepia);margin-top:8px;text-transform:uppercase}
+
+  /* Code block --------------------------------------------------------------- */
+  pre.code{background:var(--code-bg);color:var(--code-fg);font-family:var(--mono);font-size:12.5px;line-height:1.55;padding:14px 18px;margin:14px 0;border:1px solid var(--paper-edge);overflow-x:auto;white-space:pre;position:relative}
+  pre.code::before{content:attr(data-lang);position:absolute;top:6px;right:12px;font-size:9px;letter-spacing:.18em;color:var(--code-mute);font-weight:600;text-transform:uppercase}
+  pre.code .c{color:var(--sepia-mute);font-style:italic}
+
+  /* Results box --------------------------------------------------------------- */
+  .results{background:rgba(255,255,255,.02);border:1px solid var(--fold);padding:16px 20px;margin:14px 0}
+  .results table{width:100%;border-collapse:collapse;font-family:var(--body);font-size:14.5px;margin:6px 0}
+  .results th{font-family:var(--mono);font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--sepia);text-align:left;padding:5px 10px;border-bottom:2px solid var(--paper-edge);font-weight:600}
+  .results th.r{text-align:right}
+  .results td{padding:6px 10px;border-bottom:1px dashed var(--hair);color:var(--ink-soft);vertical-align:top}
+  .results td.r{text-align:right;font-family:var(--mono);font-feature-settings:"tnum" 1}
+  .results td.num{color:var(--ink);font-weight:600;font-family:var(--mono);font-feature-settings:"tnum" 1}
+  .results tbody tr:last-child td{border-bottom:1px solid var(--paper-edge)}
+  .results tbody tr.highlight td{background:rgba(240,100,100,.06)}
+  .results tbody tr.green td{background:rgba(122,184,90,.06)}
+
+  /* Findings cards ------------------------------------------------------------ */
+  .finding{border:1px solid var(--fold);background:rgba(255,255,255,.015);padding:14px 18px;margin:12px 0}
+  .finding-head{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:8px}
+  .finding-loc{font-family:var(--mono);font-size:13px;color:var(--chart);font-weight:600}
+  .chip{font-family:var(--mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;font-weight:700;padding:3px 8px;border-radius:2px;border:1px solid transparent;white-space:nowrap}
+  .chip.v-confirmed{background:var(--stamp-wash);color:var(--stamp);border-color:rgba(240,100,100,.35)}
+  .chip.v-plausible{background:var(--edit-wash);color:var(--edit);border-color:rgba(240,200,120,.35)}
+  .chip.small{font-size:9px;padding:2px 6px}
+  .kind-chip{font-family:var(--mono);font-size:9px;letter-spacing:.06em;text-transform:uppercase;font-weight:600;padding:2px 6px;border-radius:2px;background:var(--paper-edge);color:var(--sepia)}
+  .kind-chip.k-corr{color:var(--stamp);background:rgba(240,100,100,.12)}
+  .kind-chip.k-conv{color:var(--chart);background:rgba(90,158,255,.12)}
+  .kind-chip.k-clean{color:var(--sepia-mute);background:rgba(140,150,165,.1)}
+  .kind-chip.k-docs{color:var(--edit);background:rgba(240,200,120,.1)}
+  .kind-chip.k-test{color:var(--verify);background:rgba(122,184,90,.1)}
+  .finding-summary{margin:0 0 8px;font-size:15px;line-height:1.55;color:var(--ink-soft)}
+  .finding-summary strong{color:var(--ink)}
+  .finding-scenario summary{cursor:pointer;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--sepia);list-style:none;padding:2px 0}
+  .finding-scenario summary::before{content:'▸ failure scenario';color:var(--sepia)}
+  .finding-scenario[open] summary::before{content:'▾ failure scenario'}
+  .finding-scenario summary::marker,.finding-scenario summary::-webkit-details-marker{display:none}
+  .finding-scenario p{margin:8px 0 0;font-size:14px;line-height:1.6;color:var(--ink-soft);border-left:2px solid var(--fold);padding-left:12px}
+
+  /* Inventory / refuted tables ------------------------------------------------- */
+  details.inv-fold{border:1px solid var(--paper-edge);background:var(--paper-deep);padding:14px 18px;margin:16px 0}
+  details.inv-fold summary{font-family:var(--mono);font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--chart);font-weight:700;cursor:pointer;list-style:none;padding:2px 0}
+  details.inv-fold summary::before{content:'▸ ';color:var(--sepia)}
+  details.inv-fold[open] summary::before{content:'▾ '}
+  .inv-table{width:100%;border-collapse:collapse;font-size:13.5px;margin-top:14px}
+  .inv-table th{font-family:var(--mono);font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--sepia);text-align:left;padding:6px 8px;border-bottom:2px solid var(--paper-edge)}
+  .inv-table td{padding:7px 8px;border-bottom:1px solid var(--fold);color:var(--ink-soft);vertical-align:top;line-height:1.45}
+  .inv-table td.loc{font-family:var(--mono);font-size:12px;color:var(--chart);white-space:nowrap}
+  .inv-table tbody tr:hover td{background:rgba(255,255,255,.02)}
+
+  /* Path panels ------------------------------------------------------------ */
+  .path{border:1px solid var(--paper-edge);background:rgba(255,255,255,.015);padding:16px 20px;margin:12px 0}
+  .path h4{font-family:var(--serif);font-weight:600;font-size:16.5px;margin:0 0 6px;color:var(--ink);line-height:1.3}
+  .path h4 .letter{display:inline-block;width:24px;height:24px;background:var(--stamp);color:var(--paper);text-align:center;line-height:24px;font-family:var(--mono);font-size:12px;font-weight:700;margin-right:10px;vertical-align:-2px}
+  .path.recommended{background:var(--verify-wash);border-color:var(--verify);border-width:2px}
+  .path.recommended h4 .letter{background:var(--verify)}
+  .path.declined h4 .letter{background:var(--sepia-mute)}
+  .path-tradeoff{font-size:14px;color:var(--ink-soft);margin:6px 0 0;line-height:1.5}
+  .path-tradeoff strong{color:var(--ink)}
+
+  /* Decision box ------------------------------------------------------------ */
+  .action-box{background:#000;color:var(--ink);padding:20px 24px;margin:20px 0 12px;border-left:5px solid var(--stamp);border:1px solid var(--paper-edge);border-left:5px solid var(--stamp)}
+  .action-box h3{margin:0 0 8px;font-family:var(--mono);font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--stamp);font-weight:700}
+  .action-box h3::before{display:none}
+  .action-box p{margin:6px 0;color:var(--ink-soft);font-size:15px;line-height:1.58;font-family:var(--body)}
+  .action-box p strong{color:#fff}
+  .action-box .recommend{font-size:16px;color:var(--ink)}
+  .action-box .recommend strong{color:#fff;background:var(--stamp-deep);padding:2px 8px;font-weight:700;border-radius:2px}
+  .action-box .escalate{font-size:13.5px;color:var(--sepia);padding-top:10px;margin-top:10px;border-top:1px dashed var(--fold)}
+  .action-box .escalate strong{color:var(--ink)}
+
+  /* Inline code -------------------------------------------------------- */
+  code.inline{font-family:var(--mono);font-size:.92em;color:var(--ink);background:rgba(255,255,255,.06);padding:0 4px;border-bottom:1px dotted var(--sepia)}
+
+  /* Colophon ----------------------------------------------------------- */
+  .colophon{border-top:2px solid var(--paper-edge);margin-top:56px;padding:24px 0 0;font-family:var(--mono);font-size:10.5px;letter-spacing:.05em;color:var(--sepia);line-height:1.6;display:grid;grid-template-columns:1fr 1fr;gap:24px}
+  .colophon strong{color:var(--ink)}
+  .colophon a{color:var(--ink-soft);border-bottom:1px dotted currentColor}
+
+  /* Print stylesheet --------------------------------------------------- */
+  @media print{
+    body{background:#fff;color:#000;font-size:11pt}
+    .masthead{position:static;border-bottom:1.5pt solid #000;box-shadow:none}
+    main{padding:12pt}
+    .ch-section,.path,.action-box,.finding{break-inside:avoid;background:transparent}
+    .action-box{color:#000;border:2px solid #000}
+    .action-box h3,.action-box p{color:#000}
+    a{color:#000}
+  }
+
+  /* Mobile ------------------------------------------------------------- */
+  @media (max-width:720px){
+    main{padding:26px 16px 72px}
+    .masthead{padding:12px 16px 10px}
+    .masthead-grid{grid-template-columns:1fr;text-align:left;gap:6px}
+    .masthead-r{text-align:left}
+    .toc{grid-template-columns:1fr}
+    .toc-item{border-right:none}
+    .terminology dl{grid-template-columns:1fr;gap:4px 0}
+    .terminology dt{margin-top:8px}
+    .inv-table{font-size:12px}
+    .finding-head{flex-direction:column;align-items:flex-start;gap:6px}
+  }
+</style>
+</head>
+<body>
+
+<header class="masthead">
+  <div class="masthead-grid">
+    <div class="masthead-l">
+      <strong>Zero Delta LLC</strong> · invoice / zd<br>
+      Whole-project code review · impulse tier
+    </div>
+    <div class="masthead-c">Project review — 2026-06-30</div>
+    <div class="masthead-r">
+      <strong>For:</strong> David Schmidt<br>
+      Not for distribution
+    </div>
+  </div>
+</header>
+
+<main>
+
+<section class="hero">
+  <p class="hero-eyebrow">Whole-project code review · impulse effort</p>
+  <h1 class="hero-title">Every store gets written before the ledger agrees it happened. <em>That's the pattern behind most of this.</em></h1>
+  <p class="hero-lede">
+    This is a whole-project audit of <code class="inline">invoice.py</code>, <code class="inline">zd.py</code>, the shell wrappers, and the git pre-commit PII guard — not a diff review. It read every source file in the repository (5 files, grouped into 3 clusters) and surfaced <strong>103 verified findings</strong>, of which 72 survived a second adversarial pass. This report features the 25 most severe, all correctness bugs, ranked by the cluster they belong to; the remaining 47 (cleanup, conventions, documentation, testing) are in the collapsed full inventory in Chapter 5 so nothing is hidden.
+  </p>
+  <p class="hero-lede">
+    The dominant pattern: <strong>PDFs, the CSV ledger, and the SQLite database are three independent stores with no shared transaction.</strong> Writes land on disk in a fixed order with no rollback, so a duplicate invoice number, a failed DB update, or a locked file mid-operation leaves the three stores disagreeing — sometimes invisibly, sometimes as a raw crash, once as outright double-billing.
+  </p>
+
+  <nav class="toc">
+    <div class="toc-item"><span class="toc-num">1</span><div class="toc-title"><a href="#ch1">Setup &amp; methodology</a></div><span class="toc-stat info">informational</span></div>
+    <div class="toc-item"><span class="toc-num">2</span><div class="toc-title"><a href="#ch2">Cluster A — multi-store writes</a></div><span class="toc-stat blocked">blocking</span></div>
+    <div class="toc-item"><span class="toc-num">3</span><div class="toc-title"><a href="#ch3">Cluster B — other correctness bugs</a></div><span class="toc-stat open">action needed</span></div>
+    <div class="toc-item"><span class="toc-num">4</span><div class="toc-title"><a href="#ch4">Cluster C — security &amp; process gaps</a></div><span class="toc-stat open">action needed</span></div>
+    <div class="toc-item"><span class="toc-num">5</span><div class="toc-title"><a href="#ch5">Full inventory &amp; disposition</a></div><span class="toc-stat decided">reference</span></div>
+  </nav>
+
+  <details class="terminology">
+    <summary>Quick terminology reference (click to expand)</summary>
+    <dl>
+      <dt>impulse tier</dt><dd>The fastest of this review's effort levels — a single pass rather than exhaustive multi-agent coverage. Trades completeness for speed; findings are still individually verified, but the sweep is not exhaustive.</dd>
+      <dt>Map → Find → Verify → Sweep → Synthesize</dt><dd>The five-stage pipeline this review ran (detailed in Chapter 1): map the codebase into clusters, dispatch finders per cluster, verify each candidate against the actual source, sweep for anything missed, then synthesize into this report.</dd>
+      <dt>CONFIRMED</dt><dd>The finding was reproduced or traced through the actual code path and the failure is real as described.</dd>
+      <dt>PLAUSIBLE</dt><dd>The failure mechanism is sound but wasn't (or couldn't be) directly reproduced — lower confidence than CONFIRMED, still worth fixing.</dd>
+      <dt>multi-store write</dt><dd>This project persists invoice state in three independent places: a PDF file, a CSV ledger (<code class="inline">invoice.py</code>'s format), and a SQLite database (<code class="inline">zd.py</code>'s <code class="inline">~/.zd.db</code>). None of the three share a transaction, so a failure partway through a command can leave them disagreeing.</dd>
+      <dt>cluster</dt><dd>A group of findings sharing one root cause or one area of the codebase. This review found three: multi-store write ordering (Cluster A), a long tail of independent correctness bugs (Cluster B), and the pre-commit PII guard plus process/security gaps (Cluster C).</dd>
+    </dl>
+  </details>
+</section>
+
+<!-- ====================================================================== -->
+<!-- CHAPTER 1 — SETUP & METHODOLOGY                                        -->
+<!-- ====================================================================== -->
+<article class="ch-section" id="ch1">
+  <h2 class="ch"><span class="num">Chapter 1</span>Setup &amp; methodology</h2>
+  <p class="ch-meta"><span class="dot"></span><strong>Informational</strong> · establishes scope and trust in the method · no action required</p>
+
+  <h3 class="s setup">What this is about</h3>
+  <p>
+    <code class="inline">invoice.py</code> and <code class="inline">zd.py</code> together form a solo-consultant billing tool: <code class="inline">invoice.py</code> generates PDF invoices and maintains a flat CSV ledger; <code class="inline">zd.py</code> sits on top of it with a SQLite database of time-tracking sessions and expenses, and drives <code class="inline">invoice.py</code>'s own functions to actually produce invoices. Two shell wrappers (<code class="inline">invoice-wrapper</code>, <code class="inline">zd-wrapper</code>) resolve symlinks and activate a venv before dispatching to the Python entry points. A git pre-commit hook (<code class="inline">hooks/pre-commit</code>) scans staged diffs for PII before allowing a commit.
+  </p>
+  <p>
+    This review reads the whole project, not a diff — every source file was in scope: <code class="inline">invoice.py</code>, <code class="inline">zd.py</code>, <code class="inline">invoice-wrapper</code>, <code class="inline">zd-wrapper</code>, and <code class="inline">hooks/pre-commit</code>. It ran at the <strong>impulse</strong> effort tier: fast, single-pass, but every candidate finding was individually verified against the actual source before being reported — nothing here is a guess.
+  </p>
+
+  <h3 class="s ran">What we ran</h3>
+  <p>
+    The review followed a five-stage pipeline. Each stage's job:
+  </p>
+  <pre class="code" data-lang="pipeline">1. MAP        — partition the 5 files into clusters by shared root cause / area
+2. FIND       — dispatch finders per cluster to read source and propose candidate findings
+3. VERIFY     — re-check each candidate against the actual file:line; reproduce where practical
+4. SWEEP      — a second pass looking for anything the first pass missed
+5. SYNTHESIZE — dedupe root causes, rank by severity, write this report</pre>
+  <p>
+    28 finders proposed 110 candidate findings across the 5 files. Verification confirmed or downgraded each one against the live source — reproducing failure modes directly where feasible (e.g. actually staging a PII-shaped diff line and running the hook's grep, actually driving <code class="inline">group_sessions_by_week</code> with fractional hours to compare confirmation-total vs. saved-total). 103 candidates were verified as real findings (CONFIRMED or PLAUSIBLE); 7 were refuted outright after re-reading the code — those are listed in Chapter 5 so the audit trail is visible. After deduplicating findings that share one root cause across multiple call sites, 72 distinct findings remain in the full inventory; this report features the 25 most severe.
+  </p>
+
+  <h3 class="s found">What we found</h3>
+  <div class="results">
+    <table>
+      <thead><tr><th>Metric</th><th class="r">Count</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr><td>Files in scope</td><td class="r num">5</td><td>invoice.py, zd.py, 2 wrappers, pre-commit hook</td></tr>
+        <tr><td>Clusters</td><td class="r num">3</td><td>multi-store writes / other correctness / security &amp; process</td></tr>
+        <tr><td>Finders dispatched</td><td class="r num">28</td><td>parallel candidate generation</td></tr>
+        <tr><td>Candidates proposed</td><td class="r num">110</td><td>before verification</td></tr>
+        <tr class="green"><td>Verified findings</td><td class="r num">103</td><td>CONFIRMED or PLAUSIBLE after independent re-check</td></tr>
+        <tr><td>Refuted</td><td class="r num">7</td><td>rejected on re-read; listed in Ch. 5 for audit</td></tr>
+        <tr><td>Deduped inventory</td><td class="r num">72</td><td>distinct root causes, full list in Ch. 5</td></tr>
+        <tr class="highlight"><td>Featured in this report</td><td class="r num">25</td><td>all kind=correctness, ranked most severe first</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    All 25 featured findings are correctness bugs — the review's severity ranking naturally surfaced correctness issues ahead of cleanup, documentation, and testing gaps, which are real but lower-stakes and are covered in aggregate in Chapter 5. Five of the 25 share one root cause (non-transactional multi-store writes) and are grouped as Cluster A in Chapter 2 because that's the single highest-leverage fix in the whole review.
+  </p>
+
+  <h3 class="s paths">Implications</h3>
+  <p>
+    The rest of this report is organized by cluster, not by file — Chapter 2 covers the multi-store write ordering problem (5 findings, one fix pattern, highest severity), Chapter 3 covers thirteen independent correctness bugs spread across both CLIs, and Chapter 4 covers the pre-commit PII guard plus wrapper/secrets/logging gaps. Chapter 5 is the reference chapter: the full 72-item inventory, the 7 refuted candidates, and the overall recommended fix order.
+  </p>
+</article>
+
+<!-- ====================================================================== -->
+<!-- CHAPTER 2 — CLUSTER A: MULTI-STORE WRITES                              -->
+<!-- ====================================================================== -->
+<article class="ch-section" id="ch2">
+  <h2 class="ch"><span class="num">Chapter 2</span>Cluster A — non-transactional multi-store writes</h2>
+  <p class="ch-meta"><span class="dot"></span><strong>Blocking</strong> · 5 findings, all CONFIRMED · PDF + CSV + SQLite disagree with no rollback</p>
+
+  <h3 class="s setup">What this is about</h3>
+  <p>
+    Every invoice touches three independent, un-transacted stores: the PDF file on disk, <code class="inline">invoice.py</code>'s CSV ledger, and (when driven via <code class="inline">zd</code>) the <code class="inline">zd</code> SQLite database. Each store is written with its own atomicity guarantee — the PDF write is a plain file write, the CSV write uses a file lock + atomic replace, the DB write uses a SQLite transaction — but nothing wraps all three together. The write order is fixed (PDF, then CSV, then DB) and nothing rolls back an earlier store when a later one fails.
+  </p>
+  <p>
+    This is the single highest-leverage cluster in the review: one architectural gap (no shared transaction / no PDF-write deferred until after validation) produces five distinct, independently-reproducible failure modes, including actual double-billing.
+  </p>
+
+  <h3 class="s found">What we found</h3>
+    <div class="finding">
+      <div class="finding-head">
+        <span class="finding-loc">invoice.py:1185</span>
+        <span class="chip v-confirmed">CONFIRMED</span>
+      </div>
+      <p class="finding-summary">cmd_new writes the PDF via generate_pdf() before save_to_csv() validates the invoice number is unique, so a duplicate number silently overwrites an existing invoice's PDF file on disk before the duplicate-check exception aborts the ledger write. [same root cause also at: /Users/dave/Documents/Projects/invoice/invoice.py:1185, invoice.py:999, /Users/dave/Documents/Projects/invoice/zd.py:1284]</p>
+      <details class="finding-scenario">
+        <summary>Failure scenario</summary>
+        <p>User re-enters (or defaults to) an invoice number that already exists in the ledger. generate_pdf() (line 946, pdf.output()) writes/overwrites the PDF at the computed path with the new content/total; save_to_csv() then raises ClickException('...already exists...') and the CLI exits. Verified via direct reproduction: the original PDF (e.g. $100.00 total) is silently replaced on disk with the new content (e.g. $10,000.00), while the CSV ledger still shows the old $100.00 row pointing at that now-mismatched PDF file -- permanent, silent loss of the original invoice PDF with no warning that a file was overwritten.</p>
+      </details>
+    </div>
+    <div class="finding">
+      <div class="finding-head">
+        <span class="finding-loc">zd.py:1290</span>
+        <span class="chip v-confirmed">CONFIRMED</span>
+      </div>
+      <p class="finding-summary">In cmd_invoice's new-invoice path, `inv_mod.generate_pdf(...)` (zd.py:1274) and `inv_mod.save_to_csv(...)` (zd.py:1284) durably write the PDF and append a 'Sent' row to invoice.py's CSV ledger — both using invoice.py's own file-lock/atomic-write machinery, fully committed to disk — BEFORE the zd SQLite work (`INSERT INTO invoices` at zd.py:1290-1294, then `UPDATE sessions ... SET invoice_id` and `UPDATE expenses ... SET invoice_id` at zd.py:1309-1310) runs inside the same `with get_conn() as conn:` block opened at zd.py:1055. None of lines 1266-1310 are wrapped in try/except, and sqlite3.Connection's context-manager `__exit__` only commits-or-rolls-back (it never partially commits). If any exception occurs between the successful save_to_csv() call and the completion of the two UPDATE statements (a DB constraint error, KeyboardInterrupt, disk-full on the DB, etc.), the CSV ledger and PDF are left as a fully realized 'Sent' invoice with no corresponding row in the zd `invoices` table, and the underlying sessions/expenses remain `invoice_id IS NULL` (unbilled) in the zd DB. This is the inverse-and-worse case of the already-flagged 'zd.py:1284 save_to_csv exception not caught' finding: here save_to_csv *succeeds*, so the external ledger is durably correct while the internal DB silently reverts, with no rollback of the PDF/CSV side.</p>
+      <details class="finding-scenario">
+        <summary>Failure scenario</summary>
+        <p>zd invoice acme generates and durably saves the PDF + CSV row for invoice 2026-0007, then the DB INSERT/UPDATE step fails or the process is killed (e.g. Ctrl-C, disk pressure, DB lock timeout) before the sessions are marked billed. The same unbilled sessions are still selectable by `zd invoice acme` on the next run: the user re-runs it, a *new* invoice number (2026-0008) is generated for the identical sessions, and the client is billed twice for the same work under two different invoice numbers. The orphaned 2026-0007 CSV/PDF entry has no zd DB record, so `zd paid 2026-0007` fails with 'not found in zd database' even though a real PDF and CSV row exist for it — a ledger the operator has no built-in command to reconcile.</p>
+      </details>
+    </div>
+    <div class="finding">
+      <div class="finding-head">
+        <span class="finding-loc">zd.py:1173</span>
+        <span class="chip v-confirmed">CONFIRMED</span>
+      </div>
+      <p class="finding-summary">Unguarded Path(old_path).unlink() in the --regenerate flow, inside the get_conn() transaction, can crash and roll back a DB update that the CSV ledger update (already durably written) does not roll back</p>
+      <details class="finding-scenario">
+        <summary>Failure scenario</summary>
+        <p>In `zd invoice &lt;client&gt; --regenerate &lt;num&gt;`, after the new PDF is generated and the CSV ledger row is atomically updated (zd.py:1146-1168, all inside `with get_conn() as conn:` starting at line 1055), the old PDF is deleted with a bare `Path(old_path).unlink()` (line 1173) -- no try/except. If that delete fails (permission denied, file held open in Preview/Finder, read-only/network mount), the exception propagates out of the `with get_conn()` block. Because sqlite3's connection context manager rolls back the pending transaction on any exception (and never explicitly commits until clean exit), the just-executed `UPDATE invoices SET total = ?, pdf_path = ?` (line 1146-1149) is rolled back. But the CSV ledger write a few lines earlier used its own file lock + atomic write (`inv_mod._atomic_write_csv`) and already landed on disk, outside the SQL transaction. Result: the CSV ledger now shows the new total/pdf_path for that invoice while the zd SQLite DB still has the old ones -- a permanent cross-ledger desync -- and the CLI exits via an unhandled traceback instead of a clean error, with both the old and new PDF left on disk.</p>
+      </details>
+    </div>
+    <div class="finding">
+      <div class="finding-head">
+        <span class="finding-loc">zd.py:1146</span>
+        <span class="chip v-confirmed">CONFIRMED</span>
+      </div>
+      <p class="finding-summary">`zd invoice --regenerate` recomputes the total from the client's CURRENT rate (live `cl.rate` join at line 1090/1117), then overwrites the stored total and PDF of an already-sent/paid invoice. [same root cause also at: /Users/dave/Documents/Projects/invoice/zd.py:1090]</p>
+      <details class="finding-scenario">
+        <summary>Failure scenario</summary>
+        <p>A consultant changes a client's hourly rate, then later runs `zd invoice &lt;client&gt; --regenerate &lt;old-invoice-number&gt;` to fix a cosmetic PDF issue on a previously sent (possibly already-paid) invoice. The regenerated PDF and the `invoices.total` DB row silently reflect the new rate rather than what the client was actually billed, corrupting the historical financial record with no warning that the rate differs from the original.</p>
+      </details>
+    </div>
+    <div class="finding">
+      <div class="finding-head">
+        <span class="finding-loc">zd.py:892</span>
+        <span class="chip v-confirmed">CONFIRMED</span>
+      </div>
+      <p class="finding-summary">`zd edit --force` (and `zd edit-expense --force`) allow changing hours/date/notes on an already-billed session without touching the parent `invoices.total`, so the DB/CSV total silently drifts from the sum of its line items until the user remembers to `--regenerate`.</p>
+      <details class="finding-scenario">
+        <summary>Failure scenario</summary>
+        <p>After `zd edit 14 --hours 3.0 --force` on a session already attached to invoice `2026-0002`, `zd status` and `zd sessions --all` keep showing the invoice's old `invoices.total` (and the CSV ledger keeps the old `total` too), while the underlying session hours have changed — the PDF that was already emailed to the client also still reflects the old figure. Nothing warns the user that the invoice is now inconsistent with its sessions, so they may collect/report the stale total unless they separately remember to run `zd invoice &lt;client&gt; --regenerate &lt;num&gt;`.</p>
+      </details>
+    </div>
+  <p>
+    The throughline: PDFs and CSV rows are durably written to disk <em>before</em> the operation that's supposed to validate or finalize them completes. <code class="inline">invoice.py:1185</code> and <code class="inline">zd.py:1290</code> are the sharpest examples — one silently overwrites a PDF before a duplicate-number check fires, the other leaves a fully "Sent" invoice with no corresponding zd DB row if the DB write fails after the CSV succeeds, which reproduces as literal double-billing on retry. <code class="inline">zd.py:1173</code> and <code class="inline">zd.py:1146</code> show the same pattern in the regenerate path: an unguarded file delete can roll back a DB transaction that the already-flushed CSV write does not roll back, and regeneration silently re-prices a historical invoice at the client's <em>current</em> rate. <code class="inline">zd.py:892</code> is the softer end of the same family — editing a billed session doesn't touch the invoice total it belongs to, so the three stores drift apart by omission rather than by crash.
+  </p>
+
+  <h3 class="s paths">Where this leaves us</h3>
+
+  <div class="path recommended">
+    <h4><span class="letter">A</span>Reorder writes and wrap DB + CSV in one recoverable unit</h4>
+    <p>
+      Validate the invoice number is unique and the DB write will succeed <em>before</em> generating the PDF, not after. For the zd new-invoice path, either move the CSV/PDF write after the DB `INSERT`/`UPDATE`s succeed, or add a reconciliation step that can detect and repair a CSV/PDF row with no matching DB row (and vice versa). Wrap the regenerate flow's file delete in a try/except that doesn't propagate into the DB transaction's rollback path.
+    </p>
+    <p class="path-tradeoff">
+      <strong>What's lost:</strong> more code, and a real transactional design decision (which store is the source of truth) has to be made explicitly. <strong>What's gained:</strong> the double-billing and cross-ledger desync failure modes become structurally impossible instead of relying on nothing going wrong.
+    </p>
+  </div>
+
+  <div class="path">
+    <h4><span class="letter">B</span>Add a reconciliation command, leave write order as-is</h4>
+    <p>
+      Ship a <code class="inline">zd reconcile</code> command that diffs the CSV ledger against the zd DB and flags/fixes orphaned rows on either side. Cheaper than Path A, but treats the symptom (desync recovery) rather than the cause (desync happening at all), and does nothing for the silent PDF-overwrite case (invoice.py:1185) since there's no "orphan" to detect there — the old PDF is just gone.
+    </p>
+    <p class="path-tradeoff">
+      <strong>What's lost:</strong> the underlying race/ordering bug remains; a user has to remember to run reconcile. <strong>What's gained:</strong> fast to ship, and provides real value even after Path A is eventually done (belt-and-suspenders for a solo-operator tool).
+    </p>
+  </div>
+
+  <div class="path declined">
+    <h4><span class="letter">C</span>Leave as-is; document the risk</h4>
+    <p>
+      Add a README/HISTORY note describing the desync risk and rely on manual vigilance (the "Cross-ledger desync" and "double-billing" scenarios are rare in practice for a low-volume solo consultant).
+    </p>
+    <p class="path-tradeoff">
+      Declined: the double-billing scenario (zd.py:1290) and the silent-overwrite scenario (invoice.py:1185) are both financial-record-corrupting and were reproduced directly, not hypothesized — documentation doesn't prevent either.
+    </p>
+  </div>
+
+  <div class="action-box">
+    <h3>Recommended action</h3>
+    <p class="recommend">Fix the write ordering. Pick <strong>Path A</strong>, starting with invoice.py:1185 (duplicate-number check before PDF write) and zd.py:1290 (DB write before/atomic-with CSV finalize) — those two are the ones with directly reproduced financial-record damage.</p>
+    <p>
+      Every other correctness bug in this report is a bounded, single-command failure. This cluster is the one where the same root cause produces silent data loss (an overwritten PDF, an orphaned invoice) <em>and</em> a path to double-billing a client — the two outcomes a solo consultant's billing tool exists to prevent.
+    </p>
+    <p class="escalate">
+      <strong>Escalate to:</strong> n/a — Dave-decidable. This is a design decision about write ordering, not a call that needs another stakeholder.
+    </p>
+  </div>
+</article>
+
+<!-- ====================================================================== -->
+<!-- CHAPTER 3 — CLUSTER B: OTHER CORRECTNESS BUGS                          -->
+<!-- ====================================================================== -->
+<article class="ch-section" id="ch3">
+  <h2 class="ch"><span class="num">Chapter 3</span>Cluster B — other high-impact correctness bugs</h2>
+  <p class="ch-meta"><span class="dot"></span><strong>Action needed</strong> · 13 findings, all CONFIRMED · independent bugs, no shared root cause</p>
+
+  <h3 class="s setup">What this is about</h3>
+  <p>
+    Unlike Cluster A, these 13 findings don't share one root cause — each is an independent correctness bug in either <code class="inline">invoice.py</code> or <code class="inline">zd.py</code>, found by reading the actual code paths for CSV parsing, config loading, rate/hours math, and client matching. They range from unhandled crashes on legacy or corrupted files, to silent financial-total mismatches, to a config-sync path that bypasses the project's own safe-write machinery.
+  </p>
+
+  <h3 class="s found">What we found</h3>
+    <div class="finding">
+      <div class="finding-head">
+        <span class="finding-loc">zd.py:624</span>
+        <span class="chip v-confirmed">CONFIRMED</span>
+      </div>
+      <p class="finding-summary">cmd_log only validates hours &lt;= 0, not finiteness; float('inf') passes and Decimal quantize on it raises after the row is already committed [same root cause also at: /Users/dave/Documents/Projects/invoice/zd.py:624]</p>
+      <details class="finding-scenario">
+        <summary>Failure scenario</summary>
+        <p>`zd log acme inf "notes"` (or a typo/paste that yields `inf`) passes the `hours &lt;= 0` guard (inf &lt;= 0 is False), so the INSERT at zd.py:629-632 runs inside `with get_conn()` and commits cleanly. The very next line, `amount = to_money(hours * c["rate"])` at zd.py:634, does `Decimal(str(float('inf'))).quantize(...)`, which raises `decimal.InvalidOperation` uncaught -- the command crashes with a raw traceback. Worse, the garbage 'Infinity' hours row is now permanently stored in ~/.zd.db. Every subsequent `zd status`, `zd sessions`, or `zd invoice &lt;client&gt;` for that client sums hours (including the inf row) and calls `to_money()` on the total, hitting the same InvalidOperation and crashing -- the tool becomes unusable for that client until someone manually deletes the row from the SQLite DB (e.g. via `sqlite3 ~/.zd.db`). Note `hours=nan` is worse silently: `nan &lt;= 0` is also False so it passes validation, but sqlite3 stores Python NaN as NULL, and `to_money(nan * rate)` returns `Decimal('NaN')` without raising, so a bogus session with silently-nulled hours gets logged with no error at all.</p>
+      </details>
+    </div>
+    <div class="finding">
+      <div class="finding-head">
+        <span class="finding-loc">zd.py:493</span>
+        <span class="chip v-confirmed">CONFIRMED</span>
+      </div>
+      <p class="finding-summary">group_sessions_by_week() rounds each week's hours with float round() before pricing that week, while the pre-generation confirmation total (lines 1253-1256/1117) prices the unrounded aggregate hours in one shot — the two totals can diverge. [same root cause also at: /Users/dave/Documents/Projects/invoice/zd.py:494]</p>
+      <details class="finding-scenario">
+        <summary>Failure scenario</summary>
+        <p>Verified numerically: sessions summing to 2.015 raw hours split across two weeks (2.01h + 0.005h) yield a click.confirm 'Proceed?' total of $302.25 (to_money(total_hours*rate)) but an actual generated/saved invoice total of $303.00 (sum of independently per-week-rounded amounts) at $150/hr — a $0.75 mismatch between the dollar figure the user approves and what actually lands in the PDF, CSV ledger, and DB.</p>
+      </details>
+    </div>
+    <div class="finding">
+      <div class="finding-head">
+        <span class="finding-loc">zd.py:1062</span>
+        <span class="chip v-confirmed">CONFIRMED</span>
+      </div>
+      <p class="finding-summary">Client-profile matching in cmd_invoice uses bidirectional substring containment on names, so one client's name being a substring of another can silently pick the wrong invoice.py profile. [same root cause also at: /Users/dave/Documents/Projects/invoice/zd.py:1061]</p>
+      <details class="finding-scenario">
+        <summary>Failure scenario</summary>
+        <p>If ~/.invoice_config.json has two clients where one name contains the other (e.g. 'Smith Consulting' and 'Smith Consulting East'), `zd invoice smith` matches whichever profile appears first in the config list purely by substring containment. The generated PDF's Bill-To address/contact can be for the wrong client, so one client's invoice gets mailed with another client's billing details.</p>
+      </details>
+    </div>
+    <div class="finding">
+      <div class="finding-head">
+        <span class="finding-loc">zd.py:1066</span>
+        <span class="chip v-confirmed">CONFIRMED</span>
+      </div>
+      <p class="finding-summary">zd.py's `cmd_invoice` never checks for an empty invoice.py `clients` list, unlike invoice.py's own `cmd_new` guard</p>
+      <details class="finding-scenario">
+        <summary>Failure scenario</summary>
+        <p>`invoice.py`'s `cmd_new` explicitly aborts with "No client profiles found..." when `config['clients']` is empty (invoice.py:1147-1150) before calling `generate_pdf`/`save_to_csv`. zd.py's `cmd_invoice` (zd.py:1059-1072) only prompts the user to pick a client profile `if not matched_client and inv_clients:` — if `inv_clients` (i.e. `config.get('clients', [])`) is itself empty, that guard is falsy and `matched_client` stays `None`. It is then passed straight into `inv_mod.generate_pdf(..., client=matched_client, ...)` (zd.py:1140-1143 / 1274-1277) and `inv_mod.save_to_csv(..., client=matched_client, ...)` (zd.py:1284-1287). Inside those, `client is None` falls back to `config['clients'][0]` which also doesn't exist, so both silently fall back to `{}` (invoice.py:765-767, 970-972). The result: `zd invoice &lt;client&gt;` happily generates and finalizes a real PDF invoice with a blank "Bill To" section and an empty `payer_name` in the CSV ledger, marks the sessions as billed in the DB, and gives no warning — instead of failing loudly like the equivalent invoice.py CLI path does.</p>
+      </details>
+    </div>
+    <div class="finding">
+      <div class="finding-head">
+        <span class="finding-loc">invoice.py:1246</span>
+        <span class="chip v-confirmed">CONFIRMED</span>
+      </div>
+      <p class="finding-summary">cmd_status assigns a 'status' key to the row dict and writes back using the CSV file's original fieldnames without checking whether 'status' is actually one of them, unlike save_to_csv which explicitly guards against this same legacy-header case.</p>
+      <details class="finding-scenario">
+        <summary>Failure scenario</summary>
+        <p>Running `invoice.py status &lt;num&gt; Sent` against a ledger CSV that predates the status column (confirmed by HISTORY.md as a real prior format) adds a 'status' key to the row dict via the `_csv_field_key(...) or 'status'` fallback, then calls _atomic_write_csv(path, rows, file_headers) with the original (status-less) file_headers. csv.DictWriter defaults to extrasaction='raise', so writerows() raises ValueError('dict contains fields not in fieldnames'), crashing the status-update command and leaving the user unable to update invoice status on older ledgers -- reproduced directly.</p>
+      </details>
+    </div>
+    <div class="finding">
+      <div class="finding-head">
+        <span class="finding-loc">invoice.py:708</span>
+        <span class="chip v-confirmed">CONFIRMED</span>
+      </div>
+      <p class="finding-summary">_multi_cell_height() raises IndexError when a line-item description is non-empty but consists solely of whitespace, because str.split() on an all-whitespace string returns an empty list before words[0] is accessed.</p>
+      <details class="finding-scenario">
+        <summary>Failure scenario</summary>
+        <p>User enters a line-item description that is just spaces (e.g. accidentally hits the space bar then Enter) -- passes cmd_new's `if not description` blank-check since the string is non-empty. All line items are collected interactively, then generate_pdf() calls _multi_cell_height() on that description, which does `words = text.split()` (yields []) then `current = words[0]`, raising an uncaught IndexError that crashes the program after the user has finished entering all line items -- none of the entered data is saved since generate_pdf() runs before save_to_csv().</p>
+      </details>
+    </div>
+    <div class="finding">
+      <div class="finding-head">
+        <span class="finding-loc">invoice.py:506</span>
+        <span class="chip v-confirmed">CONFIRMED</span>
+      </div>
+      <p class="finding-summary">_run_config_setup accesses config["payee"]["name"] directly instead of using setdefault, unlike every other top-level config section (clients, invoice_header, payment, storage) which are defensively back-filled in both load_config() and _run_config_setup(). [same root cause also at: /Users/dave/Documents/Projects/invoice/invoice.py:1203, /Users/dave/Documents/Projects/invoice/invoice.py:472]</p>
+      <details class="finding-scenario">
+        <summary>Failure scenario</summary>
+        <p>If ~/.invoice_config.json is missing the top-level 'payee' key (e.g. a hand-edited or partially-migrated config), running `invoice.py config` calls _run_config_setup(existing) which does config = deepcopy(existing) (not merged with DEFAULT_CONFIG) and then immediately raises KeyError('payee') at config["payee"]["name"] -- crashing the exact command a user would run to repair a broken config, with no recovery path short of manually editing the JSON file.</p>
+      </details>
+    </div>
+    <div class="finding">
+      <div class="finding-head">
+        <span class="finding-loc">invoice.py:621</span>
+        <span class="chip v-confirmed">CONFIRMED</span>
+      </div>
+      <p class="finding-summary">get_next_invoice_number's row-parsing loop only catches (ValueError, KeyError), but a short/legacy-format CSV row can yield None for the invoice_number field, causing an uncaught TypeError.</p>
+      <details class="finding-scenario">
+        <summary>Failure scenario</summary>
+        <p>csv.DictReader fills missing trailing columns with None (restval default). The code explicitly supports legacy ledgers whose invoice_number column is not first (_csv_field_key's docstring cites 'Invoice Number' vs 'invoice_number' header remapping). If such a legacy-ordered ledger contains any short/malformed row (e.g. a hand-edited or partially-copied line with trailing columns dropped), row.get(inv_key, '') returns None, and `if "-" in invoice_str:` raises `TypeError: argument of type 'NoneType' is not a container or iterable`. This TypeError is not one of the (ValueError, KeyError) caught at line 627, so it propagates as an unhandled traceback and crashes `invoice.py new` (and any other command that first computes the next invoice number) instead of the friendly click.ClickException style used elsewhere in the file. Verified interactively: DictReader on a 2-column-header, 1-column-data row produces invoice_number=None and the `in` check raises TypeError.</p>
+      </details>
+    </div>
+    <div class="finding">
+      <div class="finding-head">
+        <span class="finding-loc">invoice.py:431</span>
+        <span class="chip v-confirmed">CONFIRMED</span>
+      </div>
+      <p class="finding-summary">load_config() only catches JSONDecodeError/OSError around json.load, but a syntactically-valid JSON file whose top level isn't an object (e.g. `[]`, `null`, a bare string) crashes with an unhandled AttributeError on the very next line.</p>
+      <details class="finding-scenario">
+        <summary>Failure scenario</summary>
+        <p>If ~/.invoice_config.json is ever truncated/corrupted into something that is still valid JSON but not a dict (e.g. an interrupted write leaves `null` or an empty array, or a user manually pastes a JSON array), `json.load` succeeds and returns a non-dict; the immediately following `if "payer" in cfg and "clients" not in cfg:` / `cfg.setdefault(...)` calls raise `AttributeError: 'list' object has no attribute 'setdefault'` (or 'argument of type NoneType is not iterable' for `null`). This bypasses the intended `click.ClickException(f"Config file ... is not valid JSON")` friendly-error path entirely and every single CLI command crashes with a raw traceback instead of guiding the user to re-run `invoice.py config`. Verified interactively: `json.loads('[]').setdefault(...)` raises AttributeError.</p>
+      </details>
+    </div>
+    <div class="finding">
+      <div class="finding-head">
+        <span class="finding-loc">invoice.py:250</span>
+        <span class="chip v-confirmed">CONFIRMED</span>
+      </div>
+      <p class="finding-summary">_read_csv_with_headers opens the ledger with a fixed 'utf-8-sig' encoding and no error handling; a non-UTF-8 or corrupted ledger file raises an unhandled UnicodeDecodeError everywhere it's called.</p>
+      <details class="finding-scenario">
+        <summary>Failure scenario</summary>
+        <p>Every ledger read path (get_next_invoice_number, _resolve_invoice_pdf_path, save_to_csv's duplicate check, cmd_status, cmd_list) funnels through _read_csv_with_headers with no try/except for decoding or csv parsing errors. If the CSV ledger is ever saved/edited with a non-UTF-8 encoding (e.g. opened and re-saved in Excel with a different codepage, or a stray corrupted byte from a copy/paste), `list(reader)` raises UnicodeDecodeError with a raw Python traceback, crashing `invoice new`, `invoice list`, `invoice status`, and `--invoice`/`--ledger` shortcuts alike — including blocking invoice creation entirely until the user manually fixes ledger encoding, with none of the friendly click.ClickException messaging used for the equivalent JSON-config parse-error path in load_config().</p>
+      </details>
+    </div>
+    <div class="finding">
+      <div class="finding-head">
+        <span class="finding-loc">zd.py:206</span>
+        <span class="chip v-confirmed">CONFIRMED</span>
+      </div>
+      <p class="finding-summary">_sync_client_to_config() reads/writes ~/.invoice_config.json directly instead of going through invoice.py's load_config()/save_config() contract [same root cause also at: /Users/dave/Documents/Projects/invoice/zd.py:230]</p>
+      <details class="finding-scenario">
+        <summary>Failure scenario</summary>
+        <p>`zd client add &lt;name&gt; ...` (which calls `_sync_client_to_config`, zd.py:206-231) reads the config with raw `json.loads` and writes it back with `CONFIG_FILE.write_text(json.dumps(...))`, bypassing invoice.py's `load_config()` migration logic and `save_config()`/`_atomic_write_json()` (invoice.py:224-245, 409-452). Two concrete consequences: (1) if the config still has invoice.py's legacy `"payer"` key (pre-migration), `_sync_client_to_config` does `config.setdefault("clients", [])` and appends to a *new* empty list, permanently orphaning the old `payer` data — the next `load_config()` call sees `"clients" in cfg` already true and never runs the `payer`→`clients` migration (invoice.py:431-432), so the legacy payee/client info is silently lost. (2) The write is non-atomic (`write_text` truncates in place, no tempfile+os.replace) and never chmods to 0o600 like `save_config` does, so a crash mid-write can corrupt the config (next `load_config()` raises `json.JSONDecodeError` → `click.ClickException`, breaking every subsequent `invoice.py`/`zd.py` invocation), and a config file created for the first time this way gets default (non-restrictive) permissions, exposing client PII in violation of the project's 0o600 convention.</p>
+      </details>
+    </div>
+    <div class="finding">
+      <div class="finding-head">
+        <span class="finding-loc">zd.py:213</span>
+        <span class="chip v-confirmed">CONFIRMED</span>
+      </div>
+      <p class="finding-summary">_sync_client_to_config swallows any config read/parse failure (not just missing file) and silently rebuilds+overwrites the live config with a near-empty stub</p>
+      <details class="finding-scenario">
+        <summary>Failure scenario</summary>
+        <p>`_sync_client_to_config` (called from `cmd_add_client` after every `zd add-client`) wraps `json.loads(CONFIG_FILE.read_text(...))` in a bare `except Exception: config = {}`. Any failure other than the file not existing -- a transient read error, an encoding hiccup, or a JSON file left mid-write/corrupted by a concurrent invoice.py process -- causes the entire config object (payee details, invoice.py client list, storage paths, weekly_summaries settings) to be replaced by an empty dict, into which only the single new client entry is inserted. `CONFIG_FILE.write_text(...)` at zd.py:231 then persists that stub over the real config. A `.bak` timestamped backup is made first (line 230), so recovery is possible, but the live `~/.invoice_config.json` used by both `zd` and `invoice.py` is destroyed on the next `zd add-client` call until the user notices and manually restores from a backup.</p>
+      </details>
+    </div>
+    <div class="finding">
+      <div class="finding-head">
+        <span class="finding-loc">zd.py:1243</span>
+        <span class="chip v-confirmed">CONFIRMED</span>
+      </div>
+      <p class="finding-summary">Next-invoice-number selection compares zero-padded numeric strings with Python's `max()`, which is only numerically correct while both candidates stay within the same fixed 4-digit width — it silently breaks once the sequence number would overflow that width.</p>
+      <details class="finding-scenario">
+        <summary>Failure scenario</summary>
+        <p>`db_next = f"{current_year}-{db_next_num:04d}"` (line 1243) and `csv_next` (from invoice.py) are compared with `invoice_number = max(csv_next, db_next)` (line 1246) as plain strings. Lexicographic ordering of zero-padded strings matches numeric ordering only up to 9999; once a year's invoice count reaches 10000, `db_next_num:04d` formats as '10000' (Python's `:04d` is a minimum width, not a hard cap) and the string '2026-10000' sorts lexicographically *before* '2026-9999' (comparing '1' &lt; '9' at the first differing character), so `max()` would pick the smaller/older-looking string as 'next', risking a duplicate or out-of-order invoice number being assigned. Low likelihood for a solo consultant's invoice volume, but a real latent string-vs-numeric comparison bug in the invoice-numbering logic that both invoice.py and zd.py rely on for uniqueness.</p>
+      </details>
+    </div>
+  <p>
+    Three sub-patterns worth naming. First, <strong>input validation gaps that reach persistence before they crash</strong>: <code class="inline">zd.py:624</code> lets <code class="inline">inf</code>/<code class="inline">nan</code> hours get committed to the sessions DB before the arithmetic that would reject them runs, and <code class="inline">zd.py:493</code> shows the pre-generation confirmation total and the actually-saved total can diverge by real money (verified: $302.25 approved vs. $303.00 saved) because rounding happens per-week before pricing instead of once at the end. Second, <strong>defensive coding that exists in one place but not its sibling</strong>: <code class="inline">invoice.py:506</code>, <code class="inline">invoice.py:621</code>, <code class="inline">invoice.py:431</code>, and <code class="inline">invoice.py:250</code> are all cases where a nearby function has the right guard (setdefault, broader exception catching, dict-type check, encoding fallback) and this one doesn't. Third, <strong>zd.py's config-sync path re-implements what invoice.py already does safely</strong>: <code class="inline">zd.py:206</code> and <code class="inline">zd.py:213</code> bypass <code class="inline">invoice.py</code>'s atomic-write and migration-aware <code class="inline">load_config()</code>/<code class="inline">save_config()</code> contract, risking silent data loss on the shared config file both tools depend on.
+  </p>
+
+  <h3 class="s paths">Where this leaves us</h3>
+
+  <div class="path recommended">
+    <h4><span class="letter">A</span>Fix in two batches: money-affecting first, then crash-hardening</h4>
+    <p>
+      Batch 1 (money-affecting, fix first): <code class="inline">zd.py:624</code> (finite-hours validation), <code class="inline">zd.py:493</code> (rounding-before-pricing), <code class="inline">zd.py:1062</code>/<code class="inline">1066</code> (client-matching/empty-list), <code class="inline">zd.py:1243</code> (invoice-number overflow). Batch 2 (crash-hardening on legacy/corrupt input): <code class="inline">invoice.py:1246</code>, <code class="inline">:708</code>, <code class="inline">:506</code>, <code class="inline">:621</code>, <code class="inline">:431</code>, <code class="inline">:250</code>, and <code class="inline">zd.py:206</code>/<code class="inline">213</code> (route through <code class="inline">invoice.py</code>'s existing safe-config helpers instead of reimplementing).
+    </p>
+    <p class="path-tradeoff">
+      <strong>What's lost:</strong> thirteen separate small PRs/commits instead of one sweeping change. <strong>What's gained:</strong> each fix is independently testable and low-risk to review; nothing here requires a design decision the way Cluster A does.
+    </p>
+  </div>
+
+  <div class="path">
+    <h4><span class="letter">B</span>Add a shared input-validation/config-loading layer first</h4>
+    <p>
+      Before fixing each site individually, extract a small shared validator (finite-number check, safe-JSON-load-returns-dict check) used by both files, then apply it everywhere at once. Reduces the chance of fixing one call site and missing a sibling with the identical gap.
+    </p>
+    <p class="path-tradeoff">
+      <strong>What's lost:</strong> more upfront design work before any single bug is fixed. <strong>What's gained:</strong> lower chance of the same class of bug reappearing at a fourteenth call site next month.
+    </p>
+  </div>
+
+  <div class="action-box">
+    <h3>Recommended action</h3>
+    <p class="recommend">Work Batch 1 of <strong>Path A</strong> this week — the four money-affecting bugs — then Batch 2 as routine hardening.</p>
+    <p>
+      Unlike Cluster A, none of these thirteen need an architectural decision; they're independently fixable, and the money-affecting ones (finite-hours validation, rounding-before-pricing, client-matching, invoice-number overflow) directly risk billing the wrong amount or the wrong client, which is worse than a crash.
+    </p>
+    <p class="escalate">
+      <strong>Escalate to:</strong> n/a — Dave-decidable, standard bug-fix backlog triage.
+    </p>
+  </div>
+</article>
+
+<!-- ====================================================================== -->
+<!-- CHAPTER 4 — CLUSTER C: SECURITY & PROCESS GAPS                         -->
+<!-- ====================================================================== -->
+<article class="ch-section" id="ch4">
+  <h2 class="ch"><span class="num">Chapter 4</span>Cluster C — security &amp; process gaps</h2>
+  <p class="ch-meta"><span class="dot"></span><strong>Action needed</strong> · 7 featured findings (pre-commit hook), all CONFIRMED · plus related security items from the full inventory</p>
+
+  <h3 class="s setup">What this is about</h3>
+  <p>
+    This project's git pre-commit hook (<code class="inline">hooks/pre-commit</code>) is the safety net meant to enforce "no PII in the project" from the global CLAUDE.md hard rules. Seven distinct, independently-reproducible ways exist for a commit carrying real PII to pass that guard silently — no error, no warning the operator would notice by default. The full inventory (Chapter 5) also carries three related items worth naming here even though they weren't in the featured 25: plaintext banking secrets in the config file instead of Bitwarden Secrets Manager, missing file logging, and wrapper scripts that trust any active <code class="inline">$VIRTUAL_ENV</code> rather than specifically this project's venv.
+  </p>
+
+  <h3 class="s found">What we found</h3>
+    <div class="finding">
+      <div class="finding-head">
+        <span class="finding-loc">hooks/pre-commit:28</span>
+        <span class="chip v-confirmed">CONFIRMED</span>
+      </div>
+      <p class="finding-summary">`grep -E '^\+[^+]'` used to isolate added diff lines mis-fires on content that itself starts with a literal `+` [same root cause also at: /Users/dave/Documents/Projects/invoice/hooks/pre-commit:28]</p>
+      <details class="finding-scenario">
+        <summary>Failure scenario</summary>
+        <p>A staged line whose actual content begins with '+' (e.g. an E.164 phone number like "+15551234567", or code like "++x"/"+=") appears in the unified diff as "++15551234567" (diff's own '+' marker plus the content's leading '+'). The regex `^\+[^+]` requires the second character to be non-'+', so it treats this exactly like the `+++ b/file` header noise it's meant to skip and silently drops the line from `$added_lines`. It is therefore never checked against `hooks/pii-patterns.txt`, so PII that happens to start with '+' (a very common phone-number format) is committed without the guard ever seeing it. Verified empirically: staging a file containing an added line `+15551234567` and running `git diff --cached --no-color -U0 | grep -E '^\+[^+]'` returns only the other added line and silently omits the phone-number line.</p>
+      </details>
+    </div>
+    <div class="finding">
+      <div class="finding-head">
+        <span class="finding-loc">hooks/pre-commit:22</span>
+        <span class="chip v-confirmed">CONFIRMED</span>
+      </div>
+      <p class="finding-summary">`':(exclude)hooks/*'` exempts every file under `hooks/`, not just the pattern file itself, from PII scanning [same root cause also at: /Users/dave/Documents/Projects/invoice/hooks/pre-commit:22, /Users/dave/Documents/Projects/invoice/hooks/pre-commit:22, /Users/dave/Documents/Projects/invoice/hooks/pre-commit:22]</p>
+      <details class="finding-scenario">
+        <summary>Failure scenario</summary>
+        <p>The exclusion is scoped to the whole `hooks/` directory (to avoid self-tripping on the pattern file's own PII strings), but that means any other new file added under `hooks/` — e.g. a new helper script, a debug log accidentally saved there, or notes in a future `hooks/README.md` — can contain real PII/secrets and the pre-commit guard will never inspect it, since the exclude pathspec removes it from `$staged_diff` before the added-lines/pattern matching ever runs.</p>
+      </details>
+    </div>
+    <div class="finding">
+      <div class="finding-head">
+        <span class="finding-loc">hooks/pre-commit:15</span>
+        <span class="chip v-confirmed">CONFIRMED</span>
+      </div>
+      <p class="finding-summary">Missing `pii-patterns.txt` disables the PII guard with only a stderr warning, not a blocked commit [same root cause also at: /Users/dave/Documents/Projects/invoice/hooks/pre-commit:16, /Users/dave/Documents/Projects/invoice/hooks/pre-commit:14, /Users/dave/Documents/Projects/invoice/hooks/pre-commit:14]</p>
+      <details class="finding-scenario">
+        <summary>Failure scenario</summary>
+        <p>If `hooks/pii-patterns.txt` is ever accidentally deleted, renamed, mis-merged, or excluded by a sparse-checkout, the hook prints a warning to stderr and does `exit 0`, allowing the commit through with zero PII scanning. Many git front ends (GUI clients, some CI wrappers, `git commit` invoked with output redirected) do not surface hook stderr prominently, so this silent full-bypass of the 'No PII in the project' guard could go unnoticed for an arbitrary number of commits before anyone realizes the pattern file is gone.</p>
+      </details>
+    </div>
+    <div class="finding">
+      <div class="finding-head">
+        <span class="finding-loc">hooks/pre-commit:40</span>
+        <span class="chip v-confirmed">CONFIRMED</span>
+      </div>
+      <p class="finding-summary">grep -niE -f &lt;(pattern_list) errors are swallowed by `|| true`, silently disabling the PII check</p>
+      <details class="finding-scenario">
+        <summary>Failure scenario</summary>
+        <p>hooks/pii-patterns.txt is hand-edited free-form regex (confirmed by reading the file); if a future entry has an unescaped/unbalanced metacharacter (e.g. a phone-number pattern with a stray '('), grep -E exits 2 with a stderr syntax error and empty stdout. The `|| true` fallback converts that failure into an empty `hits` string identical to 'no PII found', so the commit is silently ALLOWED through with the guard effectively disabled and zero indication to the committer that pattern matching never ran. Verified locally: a malformed pattern file makes `grep -niE -f bad.txt` exit 2, and wrapping it in `|| true` yields exit 0 with no output.</p>
+      </details>
+    </div>
+    <div class="finding">
+      <div class="finding-head">
+        <span class="finding-loc">hooks/pre-commit:35</span>
+        <span class="chip v-confirmed">CONFIRMED</span>
+      </div>
+      <p class="finding-summary">Empty pattern_list after comment/blank stripping exits 0 with no warning, unlike the missing-file case</p>
+      <details class="finding-scenario">
+        <summary>Failure scenario</summary>
+        <p>If hooks/pii-patterns.txt exists but every effective line is stripped (all comments/blank, e.g. from a bad merge or accidental truncation), pattern_list is empty and the hook exits 0 silently (lines 36-38). This is inconsistent with the missing-file branch (lines 14-17) which prints a `[pre-commit] WARNING ... skipping PII guard` to stderr. A committer has no way to know the PII guard is a no-op in this state, so real PII in the diff is committed without any indication the safety net was inert.</p>
+      </details>
+    </div>
+    <div class="finding">
+      <div class="finding-head">
+        <span class="finding-loc">hooks/pre-commit:28</span>
+        <span class="chip v-confirmed">CONFIRMED</span>
+      </div>
+      <p class="finding-summary">`grep -E '^\+[^+]'` only inspects textual diff hunks, so PII embedded in a binary file addition never appears as a `+`-prefixed line and is never scanned.</p>
+      <details class="finding-scenario">
+        <summary>Failure scenario</summary>
+        <p>Verified: `git diff --cached -U0` for a newly-added binary file (e.g. a screenshot, exported PDF, or .xlsx containing a client's name/SSN) prints only "Binary files /dev/null and b/&lt;path&gt; differ" — no content lines at all. `added_lines` therefore stays effectively empty for that file's content, `hits` never matches, and the commit is silently allowed (exit 0) with zero indication that the file's contents were never checked, defeating the 'No PII in the project' guarantee for any non-.gitignored binary asset.</p>
+      </details>
+    </div>
+    <div class="finding">
+      <div class="finding-head">
+        <span class="finding-loc">hooks/pre-commit:1</span>
+        <span class="chip v-confirmed">CONFIRMED</span>
+      </div>
+      <p class="finding-summary">The hook only runs if the developer has manually run `git config core.hooksPath hooks` in this checkout; nothing in the repo enforces, verifies, or warns about that precondition being unmet.</p>
+      <details class="finding-scenario">
+        <summary>Failure scenario</summary>
+        <p>core.hooksPath is stored in the local, untracked .git/config, so a fresh `git clone` (new machine, CI runner, or a colleague) starts with git's default hooksPath (.git/hooks, which only has the inert pre-commit.sample). Until someone remembers the manual one-time setup step documented in hooks/README.md, every commit — including ones that add real PII — goes through with zero warning, unlike the 'pattern file missing' case in this same script which at least prints a stderr notice; there is no equivalent notice for 'the hook isn't even installed.'</p>
+      </details>
+    </div>
+  <p>
+    Every one of these was reproduced, not hypothesized: staging a line starting with a literal <code class="inline">+</code> (a phone number) demonstrably slips past the added-lines regex; a malformed pattern file demonstrably makes <code class="inline">grep</code> exit 2 and the <code class="inline">|| true</code> demonstrably swallows that into a silent pass; a binary file addition demonstrably shows only "Binary files ... differ" with zero content scanned. The common thread is <strong>fail-open behavior with no visible signal</strong> — every one of these seven failure modes results in the commit succeeding exactly as if nothing were wrong, which is the worst possible failure mode for a guard whose entire job is to catch things before they're irreversibly pushed.
+  </p>
+
+  <h3 class="s paths">Where this leaves us</h3>
+
+  <div class="path recommended">
+    <h4><span class="letter">A</span>Make the hook fail closed, not open</h4>
+    <p>
+      Change every silent-pass branch to a loud failure: missing pattern file → block the commit with an actionable error, not a stderr warning + exit 0. Malformed pattern regex → block, don't swallow via <code class="inline">|| true</code>. Empty pattern list → block with the same warning tier as the missing-file case. Add a binary-file check that blocks (or requires an explicit allowlist) rather than silently passing. Narrow the <code class="inline">hooks/*</code> exclude to just the pattern file. Fix the <code class="inline">^\+[^+]</code> regex to correctly handle content that itself starts with <code class="inline">+</code>. Separately, move banking secrets into Bitwarden Secrets Manager per the project's own stated convention, and add a repo-root check (e.g. a Makefile target or CI step) that verifies <code class="inline">core.hooksPath</code> is actually configured before assuming the guard is active.
+    </p>
+    <p class="path-tradeoff">
+      <strong>What's lost:</strong> a fail-closed hook is more likely to occasionally block a legitimate commit (e.g. on a syntax error in the pattern file) until fixed. <strong>What's gained:</strong> the guard can no longer silently do nothing — every failure mode becomes visible at commit time instead of discovered after the fact.
+    </p>
+  </div>
+
+  <div class="path">
+    <h4><span class="letter">B</span>Add hook self-tests, defer the fail-open rewrite</h4>
+    <p>
+      Given the hook has zero automated regression tests today, add a small bats/shell test suite that pins current (broken) behavior as documented, then fix the highest-risk items first (the <code class="inline">+</code>-prefix regex and the <code class="inline">|| true</code> swallow) while deferring the rest.
+    </p>
+    <p class="path-tradeoff">
+      <strong>What's lost:</strong> leaves several fail-open paths live for longer. <strong>What's gained:</strong> establishes a regression-test safety net so future hook edits can't silently reintroduce the same bypasses.
+    </p>
+  </div>
+
+  <div class="action-box">
+    <h3>Recommended action</h3>
+    <p class="recommend">Take <strong>Path A</strong> for the pre-commit hook this week; treat the plaintext banking secrets and missing file logging as separate, lower-urgency conventions cleanup.</p>
+    <p>
+      A PII guard that fails open with no visible signal is functionally equivalent to having no guard, which directly conflicts with the "No Secrets Exposure" / "No PII" hard rule this hook exists to enforce. The fixes here are small and mechanical (regex correction, removing an <code class="inline">|| true</code>, tightening a pathspec) — there's no architectural tradeoff blocking them the way Cluster A has.
+    </p>
+    <p class="escalate">
+      <strong>Escalate to:</strong> n/a — Dave-decidable. Flag if any already-pushed commit history needs a retroactive PII scan given how long these bypasses may have been live; that's a one-time <code class="inline">git log</code> audit, not a design call.
+    </p>
+  </div>
+</article>
+
+<!-- ====================================================================== -->
+<!-- CHAPTER 5 — FULL INVENTORY & DISPOSITION                                -->
+<!-- ====================================================================== -->
+<article class="ch-section" id="ch5">
+  <h2 class="ch"><span class="num">Chapter 5</span>Full inventory &amp; disposition</h2>
+  <p class="ch-meta"><span class="dot"></span><strong>Reference</strong> · all 72 verified findings + 7 refuted candidates · overall fix order</p>
+
+  <h3 class="s setup">What this is about</h3>
+  <p>
+    The three chapters above feature the 25 most severe findings — all correctness bugs. This chapter is the audit trail: the complete 72-item deduped inventory (featured findings included, so this table is self-sufficient on its own), plus the 7 candidates that were proposed but rejected on re-verification. Both are collapsed by default; expand either to read the full list.
+  </p>
+
+  <h3 class="s found">The complete inventory (72 findings)</h3>
+  <details class="inv-fold">
+    <summary>Expand full inventory — 72 verified findings (25 featured + 47 additional)</summary>
+    <table class="inv-table">
+      <thead><tr><th>File:line</th><th>Summary</th><th>Kind</th><th>Verdict</th></tr></thead>
+      <tbody>
+        <tr>
+          <td class="loc">invoice.py:1185</td>
+          <td>cmd_new writes the PDF via generate_pdf() before save_to_csv() validates the invoice number is unique, so a duplicate number silently overwrites an existing invoice's PDF file on disk before the duplicate-check exception aborts the ledger write. [same root cause also at: /Users/dave/Documents/Projects/invoice/invoice.py:1185, invoice.py:999, /Users/dave/Documents/Projects/invoice/zd.py:1284]</td>
+          <td><span class="kind-chip k-corr">CORR</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">zd.py:1290</td>
+          <td>In cmd_invoice's new-invoice path, PDF+CSV are durably written before the zd SQLite INSERT/UPDATE, with no shared transaction or rollback on failure.</td>
+          <td><span class="kind-chip k-corr">CORR</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">zd.py:1173</td>
+          <td>Unguarded Path(old_path).unlink() in the --regenerate flow, inside the get_conn() transaction, can crash and roll back a DB update that the CSV ledger update (already durably written) does not roll back</td>
+          <td><span class="kind-chip k-corr">CORR</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">zd.py:1146</td>
+          <td>`zd invoice --regenerate` recomputes the total from the client's CURRENT rate, then overwrites the stored total and PDF of an already-sent/paid invoice.</td>
+          <td><span class="kind-chip k-corr">CORR</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">zd.py:892</td>
+          <td>`zd edit --force` (and `zd edit-expense --force`) allow changing hours/date/notes on an already-billed session without touching the parent `invoices.total`.</td>
+          <td><span class="kind-chip k-corr">CORR</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">zd.py:624</td>
+          <td>cmd_log only validates hours &lt;= 0, not finiteness; float('inf')/nan poison the sessions DB and later Decimal ops.</td>
+          <td><span class="kind-chip k-corr">CORR</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">zd.py:493</td>
+          <td>group_sessions_by_week() rounds each week's hours before pricing; the pre-generation confirmation total prices unrounded hours in one shot — totals can diverge.</td>
+          <td><span class="kind-chip k-corr">CORR</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">zd.py:1062</td>
+          <td>Client-profile matching in cmd_invoice uses bidirectional substring containment on names, risking a wrong-profile match.</td>
+          <td><span class="kind-chip k-corr">CORR</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">zd.py:1066</td>
+          <td>zd.py's `cmd_invoice` never checks for an empty invoice.py `clients` list, unlike invoice.py's own `cmd_new` guard.</td>
+          <td><span class="kind-chip k-corr">CORR</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">invoice.py:1246</td>
+          <td>cmd_status writes back a 'status' key without checking it's in the CSV's original fieldnames, unlike save_to_csv's own guard for this case.</td>
+          <td><span class="kind-chip k-corr">CORR</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">invoice.py:708</td>
+          <td>_multi_cell_height() raises IndexError on a whitespace-only line-item description.</td>
+          <td><span class="kind-chip k-corr">CORR</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">invoice.py:506</td>
+          <td>_run_config_setup accesses config["payee"]["name"] directly instead of setdefault, unlike every other top-level config section.</td>
+          <td><span class="kind-chip k-corr">CORR</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">invoice.py:621</td>
+          <td>get_next_invoice_number's row-parsing loop only catches (ValueError, KeyError); a short/legacy CSV row yields None and raises TypeError.</td>
+          <td><span class="kind-chip k-corr">CORR</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">invoice.py:431</td>
+          <td>load_config() only catches JSONDecodeError/OSError; a valid-JSON-but-non-dict file crashes with an unhandled AttributeError.</td>
+          <td><span class="kind-chip k-corr">CORR</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">invoice.py:250</td>
+          <td>_read_csv_with_headers opens the ledger with a fixed 'utf-8-sig' encoding and no error handling; non-UTF-8 files crash every read path.</td>
+          <td><span class="kind-chip k-corr">CORR</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">zd.py:206</td>
+          <td>_sync_client_to_config() reads/writes ~/.invoice_config.json directly instead of going through invoice.py's load_config()/save_config() contract.</td>
+          <td><span class="kind-chip k-corr">CORR</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">zd.py:213</td>
+          <td>_sync_client_to_config swallows any config read/parse failure and silently rebuilds+overwrites the live config with a near-empty stub.</td>
+          <td><span class="kind-chip k-corr">CORR</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">hooks/pre-commit:28</td>
+          <td>`grep -E '^\+[^+]'` used to isolate added diff lines mis-fires on content that itself starts with a literal `+` (e.g. phone numbers).</td>
+          <td><span class="kind-chip k-corr">CORR</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">hooks/pre-commit:22</td>
+          <td>`':(exclude)hooks/*'` exempts every file under `hooks/`, not just the pattern file itself, from PII scanning.</td>
+          <td><span class="kind-chip k-corr">CORR</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">hooks/pre-commit:15</td>
+          <td>Missing `pii-patterns.txt` disables the PII guard with only a stderr warning, not a blocked commit.</td>
+          <td><span class="kind-chip k-corr">CORR</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">hooks/pre-commit:40</td>
+          <td>grep -niE -f &lt;(pattern_list) errors are swallowed by `|| true`, silently disabling the PII check.</td>
+          <td><span class="kind-chip k-corr">CORR</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">hooks/pre-commit:35</td>
+          <td>Empty pattern_list after comment/blank stripping exits 0 with no warning, unlike the missing-file case.</td>
+          <td><span class="kind-chip k-corr">CORR</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">hooks/pre-commit:28</td>
+          <td>`grep -E '^\+[^+]'` only inspects textual diff hunks, so PII embedded in a binary file addition is never scanned.</td>
+          <td><span class="kind-chip k-corr">CORR</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">hooks/pre-commit:1</td>
+          <td>The hook only runs if the developer has manually run `git config core.hooksPath hooks`; nothing enforces or warns about that precondition being unmet.</td>
+          <td><span class="kind-chip k-corr">CORR</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">zd.py:1243</td>
+          <td>Next-invoice-number selection compares zero-padded numeric strings with Python's `max()`, which breaks once the sequence number overflows 4 digits.</td>
+          <td><span class="kind-chip k-corr">CORR</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">zd.py:245</td>
+          <td>`week_label()` formats only month/day with no year, so `group_sessions_by_week`'s dict keyed by that label silently merges weeks from different calendar years.</td>
+          <td><span class="kind-chip k-corr">CORR</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">invoice.py:233</td>
+          <td>_atomic_write_json captures tmp_path only after json.dump/flush/fsync succeed, so a failure during those calls leaves the delete=False temp file orphaned.</td>
+          <td><span class="kind-chip k-corr">CORR</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">zd.py:56</td>
+          <td>_backup_file() copies only the main .zd.db file, never the -wal/-shm sidecar files that WAL mode produces.</td>
+          <td><span class="kind-chip k-corr">CORR</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">zd.py:1156</td>
+          <td>zd.py's direct CSV-row patches (regenerate flow and `cmd_paid`) call `_atomic_write_csv` without the `_backup_file` step `save_to_csv` performs.</td>
+          <td><span class="kind-chip k-corr">CORR</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">zd.py:1103</td>
+          <td>No exception handling around _summary_server_context()/_spawn_summary_server() in cmd_invoice: any Popen/mkdir/open OSError crashes the whole invoice command.</td>
+          <td><span class="kind-chip k-corr">CORR</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">zd.py:401</td>
+          <td>_summary_server_context only reaps the spawned llama-server on SummaryServerError; any other exception during startup wait skips cleanup entirely.</td>
+          <td><span class="kind-chip k-corr">CORR</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">zd.py:374</td>
+          <td>_shutdown_summary_server silently swallows any failure of the post-kill proc.wait(), risking an orphaned, fully-detached llama-server process.</td>
+          <td><span class="kind-chip k-corr">CORR</span></td>
+          <td><span class="chip small v-plausible">PLAUSIBLE</span></td>
+        </tr>
+        <tr>
+          <td class="loc">zd.py:342</td>
+          <td>_spawn_summary_server opens the log file handle with a bare `open()` (no try/finally) immediately before a subprocess.Popen() call that can raise.</td>
+          <td><span class="kind-chip k-corr">CORR</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">zd.py:97</td>
+          <td>Every command uses `with get_conn() as conn:`, but `sqlite3.Connection.__exit__` only commits/rolls back — it never closes the connection, so every command leaks an open SQLite connection.</td>
+          <td><span class="kind-chip k-corr">CORR</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">zd.py:163</td>
+          <td>_complete_client only calls conn.close() on the success path; if the query raises, the outer bare except swallows the error and leaks the connection.</td>
+          <td><span class="kind-chip k-corr">CORR</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">zd.py:162</td>
+          <td>_complete_client (shell tab-completion) calls get_conn(), which unconditionally runs _backup_file(ZD_DB) on every invocation, so every completion request clones the whole DB.</td>
+          <td><span class="kind-chip k-corr">CORR</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">invoice.py:1204</td>
+          <td>dict.get(key, default) only substitutes when the key is absent, not when present-but-empty, so a blank client 'contact' field silently produces an empty greeting.</td>
+          <td><span class="kind-chip k-corr">CORR</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">invoice.py:334</td>
+          <td>None of the subprocess.run() calls used to open files/PDFs or launch the mail client pass a timeout, so a hung external app blocks the CLI indefinitely.</td>
+          <td><span class="kind-chip k-corr">CORR</span></td>
+          <td><span class="chip small v-plausible">PLAUSIBLE</span></td>
+        </tr>
+        <tr>
+          <td class="loc">invoice-wrapper:14</td>
+          <td>Wrapper trusts any currently-active $VIRTUAL_ENV, not specifically this project's own venv.</td>
+          <td><span class="kind-chip k-corr">CORR</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">invoice-wrapper:6</td>
+          <td>Symlink-resolution while-loop has no cycle detection or iteration cap.</td>
+          <td><span class="kind-chip k-corr">CORR</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">invoice-wrapper:6</td>
+          <td>No `set -e` around `cd -P "$(dirname "$SOURCE")" &amp;&amp; pwd` in the symlink-resolution loop; a failed cd silently yields an empty path.</td>
+          <td><span class="kind-chip k-corr">CORR</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">invoice.py:115</td>
+          <td>Banking secrets (routing, account) persisted in plaintext config file instead of Bitwarden Secrets Manager.</td>
+          <td><span class="kind-chip k-conv">CONV</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">invoice.py:1</td>
+          <td>Missing file logging setup via RotatingFileHandler.</td>
+          <td><span class="kind-chip k-conv">CONV</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">invoice.py:799</td>
+          <td>The two-column label+lines rendering block (header cells + zipped-line loop) is duplicated between From/Bill To and Payment Information/Contact, including a col_w=85 magic number defined separately in each place.</td>
+          <td><span class="kind-chip k-clean">CLEAN</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">invoice.py:991</td>
+          <td>cmd_new's get_next_invoice_number and save_to_csv's duplicate-check each acquire the file lock and read/parse the entire ledger CSV independently — two full-file reads under two lock windows for one `invoice.py new` run.</td>
+          <td><span class="kind-chip k-clean">CLEAN</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">zd.py:1035</td>
+          <td>Dynamic import of invoice.py via importlib is copy-pasted verbatim in cmd_invoice and cmd_paid instead of a shared `_load_invoice_module()` helper.</td>
+          <td><span class="kind-chip k-clean">CLEAN</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">zd.py:1152</td>
+          <td>CSV-ledger row patch logic is duplicated between the --regenerate branch and cmd_paid instead of a shared `_patch_csv_invoice_row()` helper.</td>
+          <td><span class="kind-chip k-clean">CLEAN</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">zd.py:26</td>
+          <td>`import copy` at module level is never used anywhere in the 1490-line file.</td>
+          <td><span class="kind-chip k-clean">CLEAN</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">zd-wrapper:6</td>
+          <td>zd-wrapper duplicates invoice-wrapper's entire symlink-resolution + venv-dispatch logic instead of sharing one helper.</td>
+          <td><span class="kind-chip k-clean">CLEAN</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">invoice.py:719</td>
+          <td>_payee_lines and _client_lines duplicate the identical address-splitting and 'city, state zip' formatting logic, differing only by an optional contact line.</td>
+          <td><span class="kind-chip k-clean">CLEAN</span></td>
+          <td><span class="chip small v-plausible">PLAUSIBLE</span></td>
+        </tr>
+        <tr>
+          <td class="loc">zd.py:1102</td>
+          <td>The 'summarize-then-group' branch is duplicated verbatim in the regenerate path and the new-invoice path.</td>
+          <td><span class="kind-chip k-clean">CLEAN</span></td>
+          <td><span class="chip small v-plausible">PLAUSIBLE</span></td>
+        </tr>
+        <tr>
+          <td class="loc">invoice.py:1220</td>
+          <td>cmd_new's fallback message tells the user to 'Add client email in config' to enable the email-invoice shortcut, but the config wizard never collects a client email anywhere.</td>
+          <td><span class="kind-chip k-docs">DOCS</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">invoice.py:368</td>
+          <td>_open_email_client's docstring says it 'opens a compose window in the default mail client,' but on macOS it is hardcoded to Apple Mail via AppleScript.</td>
+          <td><span class="kind-chip k-docs">DOCS</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">zd.py:478</td>
+          <td>group_sessions_by_week()'s docstring claims returned dicts have keys {label, hours, rate, amount, sessions}, but they actually have {description, hours, rate, amount}.</td>
+          <td><span class="kind-chip k-docs">DOCS</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">zd.py:1</td>
+          <td>The module-level docstring's Usage summary omits `zd add-client`/`zd completion` entirely and lists `zd invoice` without --month/--summarize-weeks/--regenerate flags.</td>
+          <td><span class="kind-chip k-docs">DOCS</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">zd.py:40</td>
+          <td>Section header comment says backups 'keep last 5' but _MAX_BACKUPS is 20, and README correctly documents 20.</td>
+          <td><span class="kind-chip k-docs">DOCS</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">README.md:114</td>
+          <td>The 'Using invoice-wrapper' example block includes `./zd-wrapper` lines, contradicting zd-wrapper's own header comment and every other README example which invokes zd as a bare global command.</td>
+          <td><span class="kind-chip k-docs">DOCS</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">invoice.py:6</td>
+          <td>The module-level Usage docstring lists config/new/list but omits the `status` subcommand, which is a real, README-documented CLI command.</td>
+          <td><span class="kind-chip k-docs">DOCS</span></td>
+          <td><span class="chip small v-plausible">PLAUSIBLE</span></td>
+        </tr>
+        <tr>
+          <td class="loc">hooks/pre-commit:49</td>
+          <td>The blocked-commit message claims the printed number is 'from the diff hunk', but it is actually grep -n's ordinal position within the concatenated $added_lines text — matching neither a diff hunk line nor a source file line.</td>
+          <td><span class="kind-chip k-docs">DOCS</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">invoice.py:1090</td>
+          <td>cmd_new (the tool's primary invoice-creation workflow) has zero test coverage in test_invoice_cli.py.</td>
+          <td><span class="kind-chip k-test">TEST</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">invoice.py:1226</td>
+          <td>cmd_status and cmd_list — the CLI commands that mutate and read the invoice ledger — have no test coverage at all.</td>
+          <td><span class="kind-chip k-test">TEST</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">zd.py:892</td>
+          <td>cmd_edit / cmd_edit_expense billed-session `--force` guard has zero test coverage.</td>
+          <td><span class="kind-chip k-test">TEST</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">zd.py:1346</td>
+          <td>cmd_paid's CSV-ledger sync and its exception-handling fallback are completely untested.</td>
+          <td><span class="kind-chip k-test">TEST</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">zd.py:598</td>
+          <td>The everyday CLI surface — cmd_log, cmd_expense, cmd_status, cmd_sessions, cmd_add_client, cmd_backfill, cmd_clients, cmd_completion, get_client, _worklog, _sync_client_to_config — has no test coverage anywhere in tests/.</td>
+          <td><span class="kind-chip k-test">TEST</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">invoice.py:834</td>
+          <td>generate_pdf's page-break/pagination logic has no regression test with enough line items or long descriptions to force a page break.</td>
+          <td><span class="kind-chip k-test">TEST</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">zd.py:324</td>
+          <td>_spawn_summary_server's own validation branches (missing llama-server binary, missing model GGUF file) are never invoked directly by a test — all higher-level tests mock the whole function.</td>
+          <td><span class="kind-chip k-test">TEST</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">zd.py:374</td>
+          <td>_shutdown_summary_server's real terminate/timeout/kill logic is never called in tests — only mocked away wherever it's used.</td>
+          <td><span class="kind-chip k-test">TEST</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">hooks/pre-commit:40</td>
+          <td>The entire PII-blocking match logic (grep -niE -f against staged added-lines) has zero automated regression tests.</td>
+          <td><span class="kind-chip k-test">TEST</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">invoice-wrapper:6</td>
+          <td>invoice-wrapper and zd-wrapper (symlink-chain resolution + venv fallback + missing-venv error path) are entirely untested — no shell-level test harness exists in the repo.</td>
+          <td><span class="kind-chip k-test">TEST</span></td>
+          <td><span class="chip small v-confirmed">CONFIRMED</span></td>
+        </tr>
+        <tr>
+          <td class="loc">invoice.py:999</td>
+          <td>save_to_csv's duplicate-invoice-number rejection and legacy-header remapping for non-canonical CSV files are never exercised by a direct test.</td>
+          <td><span class="kind-chip k-test">TEST</span></td>
+          <td><span class="chip small v-plausible">PLAUSIBLE</span></td>
+        </tr>
+        <tr>
+          <td class="loc">invoice.py:41</td>
+          <td>_backup_file's timestamped-backup creation and keep-last-20 pruning logic has no test.</td>
+          <td><span class="kind-chip k-test">TEST</span></td>
+          <td><span class="chip small v-plausible">PLAUSIBLE</span></td>
+        </tr>
+        <tr>
+          <td class="loc">README.md:360</td>
+          <td>The project's sole documented test command only discovers `.py` files, so nothing wires shell-script tests (wrappers/hook) into the authoritative test run.</td>
+          <td><span class="kind-chip k-test">TEST</span></td>
+          <td><span class="chip small v-plausible">PLAUSIBLE</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </details>
+
+  <h3 class="s found">Refuted candidates (7)</h3>
+  <details class="inv-fold">
+    <summary>Expand refuted candidates — proposed, then rejected on re-verification</summary>
+    <table class="inv-table">
+      <thead><tr><th>File:line</th><th>Why it was refuted</th></tr></thead>
+      <tbody>
+        <tr>
+          <td class="loc">invoice.py:844</td>
+          <td>generate_pdf evaluates the same three-way (hours==0/rate==0/amount==0) condition twice: once to pick desc_w for the page-break-height estimate, then again to pick the actual rendering branch, instead of reusing the already-computed desc_w.</td>
+        </tr>
+        <tr>
+          <td class="loc">invoice.py:1204</td>
+          <td>Email subject and body constructed from user-controlled fields without escaping for AppleScript.</td>
+        </tr>
+        <tr>
+          <td class="loc">invoice.py:743</td>
+          <td>_client_lines (the 'Bill To' block builder) has no docstring, unlike its sibling functions _payee_lines and _payee_contact_lines immediately above it.</td>
+        </tr>
+        <tr>
+          <td class="loc">zd.py:175</td>
+          <td>`_worklog_path` and `_sync_client_to_config` each re-import `json` locally even though `json` is already imported at module scope; similarly `_spawn_summary_server` locally re-imports `shutil`.</td>
+        </tr>
+        <tr>
+          <td class="loc">invoice-wrapper:7</td>
+          <td>Symlink-chain resolution loop has no `set -e` and no error check on `cd`, so a broken/dangling symlink silently yields an empty DIR/VENV_DIR instead of failing loudly.</td>
+        </tr>
+        <tr>
+          <td class="loc">invoice-wrapper:6</td>
+          <td>Symlink-resolution while-loop has no cycle guard or iteration cap.</td>
+        </tr>
+        <tr>
+          <td class="loc">zd.py:67</td>
+          <td>Both invoice.py and zd.py store runtime state (CONFIG_FILE, ZD_DB, default CSV ledger + invoices dir) directly under $HOME rather than a gitignored project subdirectory, conflicting with the user's Self-Containment convention — noted as possibly an intentional exception since it keeps banking secrets out of the git working tree.</td>
+        </tr>
+      </tbody>
+    </table>
+  </details>
+  <p>
+    Refuting these mattered as much as confirming the other 72: each was a plausible-sounding candidate (double-evaluated conditions, missing docstrings, AppleScript injection, redundant local imports, symlink-loop guards, and a Self-Containment convention question about storing state under <code class="inline">$HOME</code>) that, on closer reading, either wasn't actually a defect or was explicitly judged an acceptable tradeoff (keeping banking secrets out of the git working tree, in the <code class="inline">$HOME</code> case).
+  </p>
+
+  <h3 class="s paths">Where this leaves us — overall disposition</h3>
+  <div class="results">
+    <table>
+      <thead><tr><th>Priority</th><th>Cluster</th><th>Why first / next</th></tr></thead>
+      <tbody>
+        <tr class="highlight"><td class="num">1 — now</td><td>Cluster A (Ch. 2)</td><td>Directly reproduced silent data loss and double-billing. Blocking.</td></tr>
+        <tr><td class="num">2 — this week</td><td>Cluster C, hook fixes (Ch. 4)</td><td>Security guard fails open with no signal; small, mechanical fixes.</td></tr>
+        <tr><td class="num">3 — this week</td><td>Cluster B, Batch 1 (Ch. 3)</td><td>Money-affecting: finite-hours validation, rounding, client-matching, invoice-number overflow.</td></tr>
+        <tr><td class="num">4 — routine</td><td>Cluster B, Batch 2 (Ch. 3)</td><td>Crash-hardening on legacy/corrupt input; annoying, not financially dangerous.</td></tr>
+        <tr><td class="num">5 — routine</td><td>Conventions/cleanup/docs/testing (Ch. 5 inventory)</td><td>47 additional items: plaintext secrets, missing logging, duplication, stale docstrings, test gaps.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="action-box">
+    <h3>Recommended action</h3>
+    <p class="recommend">Work top-to-bottom: <strong>Cluster A</strong> this week, <strong>Cluster C hook fixes</strong> alongside it, then <strong>Cluster B Batch 1</strong> before Batch 2 or the long tail.</p>
+    <p>
+      Nothing in this review is a design-level blocker except Cluster A's write-ordering decision (which store is authoritative). Everything else is independently fixable without waiting on another decision — this is a "work the list" report, not a "pick one path" report, at the whole-project level.
+    </p>
+    <p class="escalate">
+      <strong>Escalate to:</strong> n/a — Dave-decidable. All 72 findings are within one operator's authority to fix; none require external sign-off.
+    </p>
+  </div>
+</article>
+
+<div class="colophon">
+  <div>
+    <strong>Compiled</strong> · Zero Delta LLC · 2026-06-30<br>
+    <strong>Companion artifacts</strong><br>
+    · <a href="../invoice.py">invoice.py</a><br>
+    · <a href="../zd.py">zd.py</a><br>
+    · <a href="../hooks/pre-commit">hooks/pre-commit</a>
+  </div>
+  <div>
+    <strong>How this was produced</strong><br>
+    · project-review skill, impulse tier · Map → Find → Verify → Sweep → Synthesize · 28 finders, 110 candidates, 103 verified, 7 refuted, 72 deduped, 25 featured<br>
+    <strong>Status</strong> · 5/5 chapters complete · 1 blocking cluster · 2 action-needed clusters
+  </div>
+</div>
+
+</main>
+</body>
+</html>

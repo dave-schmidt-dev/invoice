@@ -1,0 +1,9 @@
+# invoice ledger — minimal machine state. NO `freeze` field (computed on read).
+invariants:
+  INV-1: {gate_test_status: missing}    # covered | missing
+  INV-2: {gate_test_status: missing}
+  INV-3: {gate_test_status: missing}
+  INV-4: {gate_test_status: missing}
+  INV-5: {gate_test_status: missing}
+  INV-6: {gate_test_status: missing}
+resolutions: {}                          # INV-x: {resolved_at_date: "YYYY-MM-DD", note: "..."}
