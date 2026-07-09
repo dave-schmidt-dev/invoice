@@ -11,7 +11,15 @@ while [ -L "$SOURCE" ]; do
 done
 PROJECT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 
-if [[ "$VIRTUAL_ENV" != "" && -x "$VIRTUAL_ENV/bin/python" ]]; then
+# Resolve the active venv (if any) to an absolute path for comparison, so we
+# only trust it if it's THIS project's own venv and not some unrelated
+# project's virtualenv left active in the shell.
+RESOLVED_VIRTUAL_ENV=""
+if [[ "$VIRTUAL_ENV" != "" ]]; then
+    RESOLVED_VIRTUAL_ENV="$(cd -P "$VIRTUAL_ENV" 2>/dev/null && pwd)"
+fi
+
+if [[ "$RESOLVED_VIRTUAL_ENV" != "" && "$RESOLVED_VIRTUAL_ENV" == "$PROJECT_DIR/venv" && -x "$VIRTUAL_ENV/bin/python" ]]; then
     "$VIRTUAL_ENV/bin/python" "$PROJECT_DIR/zd.py" "$@"
 else
     VENV="$PROJECT_DIR/venv"

@@ -10,9 +10,17 @@ while [ -L "$SOURCE" ]; do
 done
 VENV_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 
-# Check if we're already in the venv
-if [[ "$VIRTUAL_ENV" != "" && -x "$VIRTUAL_ENV/bin/python" ]]; then
-    # Already in venv, just run the command
+# Resolve the active venv (if any) to an absolute path for comparison, so we
+# only trust it if it's THIS project's own venv and not some unrelated
+# project's virtualenv left active in the shell.
+RESOLVED_VIRTUAL_ENV=""
+if [[ "$VIRTUAL_ENV" != "" ]]; then
+    RESOLVED_VIRTUAL_ENV="$(cd -P "$VIRTUAL_ENV" 2>/dev/null && pwd)"
+fi
+
+# Check if we're already in this project's own venv
+if [[ "$RESOLVED_VIRTUAL_ENV" != "" && "$RESOLVED_VIRTUAL_ENV" == "$VENV_DIR/venv" && -x "$VIRTUAL_ENV/bin/python" ]]; then
+    # Already in this project's venv, just run the command
     "$VIRTUAL_ENV/bin/python" "$VENV_DIR/invoice.py" "$@"
 else
     # Not in venv, activate it first
