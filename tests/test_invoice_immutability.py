@@ -17,8 +17,12 @@ Contract asserted here (regenerate half):
     snapshot existed) triggers a prominent warning on regenerate — the current
     rate is never silently substituted.
 
-The force-edit half (Task B.4) is intentionally left as an empty section for a
-later task to extend.
+Task B.4 extends this file with the force-edit half: `zd edit`/`zd edit-expense`
+REFUSE billing-relevant edits (hours/date, amount/date) on an already-billed
+session/expense REGARDLESS of --force, naming the parent invoice in the
+refusal. Only notes/description may be edited on a billed row, and that
+requires no --force. There is no auto-regenerate — the refusal simply leaves
+the row and the invoice's total untouched.
 
 The harness mirrors tests/test_zd_invoice.py and
 tests/test_invoice_transaction_integrity.py: TemporaryDirectory, HOME/ZD_DB/
@@ -288,11 +292,257 @@ class RegenerateRateImmutabilityTests(_RegenerateHarness):
 
 
 class RegenerateForceEditTests(_RegenerateHarness):
-    """Task B.4 (force-edit on regenerate) will extend this section.
+    """Task B.4 (INV-3): billed rows lock their billing-relevant fields.
 
-    Intentionally empty for now — kept as a clearly labeled home so the later
-    force-edit immutability assertions land beside the regenerate ones.
+    DECISION (maintainer): a billed session/expense REFUSES edits to the
+    fields that feed its parent invoice's total — hours/work_date for a
+    session, amount/expense_date for an expense — REGARDLESS of --force.
+    Only --notes (session) / --description (expense) may be edited on a
+    billed row, and that edit requires no --force at all. There is no
+    auto-regenerate; the refusal simply leaves everything untouched.
     """
+
+    @staticmethod
+    def _session_row(db_path, session_id):
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            return conn.execute(
+                "SELECT * FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _expense_row(db_path, expense_id):
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            return conn.execute(
+                "SELECT * FROM expenses WHERE id = ?", (expense_id,)
+            ).fetchone()
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _billed_session_ids(db_path):
+        conn = sqlite3.connect(db_path)
+        try:
+            return [
+                r[0]
+                for r in conn.execute(
+                    "SELECT id FROM sessions WHERE invoice_id IS NOT NULL ORDER BY id"
+                ).fetchall()
+            ]
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _billed_expense_ids(db_path):
+        conn = sqlite3.connect(db_path)
+        try:
+            return [
+                r[0]
+                for r in conn.execute(
+                    "SELECT id FROM expenses WHERE invoice_id IS NOT NULL ORDER BY id"
+                ).fetchall()
+            ]
+        finally:
+            conn.close()
+
+    def test_edit_hours_on_billed_session_is_refused(self):
+        """--hours on a billed session is refused even with --force; nothing
+        changes in the session row or the parent invoice's total."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path, _, ledger_file, _ = self._seed(tmpdir, rate=100.00)
+            runner = CliRunner()
+
+            self._bill(runner)
+            invoice_number = self._invoice_row(db_path)["invoice_number"]
+            original_total = self._invoice_row(db_path)["total"]
+            original_csv_total = self._csv_total(ledger_file, invoice_number)
+
+            session_ids = self._billed_session_ids(db_path)
+            self.assertTrue(session_ids, "expected at least one billed session")
+            session_id = session_ids[0]
+            before = self._session_row(db_path, session_id)
+
+            result = runner.invoke(
+                zd.cli,
+                ["edit", str(session_id), "--hours", "6", "--force"],
+            )
+
+            self.assertNotEqual(result.exit_code, 0, msg=result.output)
+            self.assertIn(str(session_id), result.output)
+            self.assertIn(invoice_number, result.output)
+            self.assertIn("locked", result.output)
+
+            after = self._session_row(db_path, session_id)
+            self.assertEqual(after["hours"], before["hours"])
+            self.assertEqual(
+                self._invoice_row(db_path)["total"], original_total,
+                "invoices.total must not go stale",
+            )
+            self.assertEqual(
+                self._csv_total(ledger_file, invoice_number),
+                original_csv_total,
+                "CSV ledger total must not go stale",
+            )
+
+    def test_edit_date_on_billed_session_is_refused(self):
+        """--date on a billed session is refused even with --force."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path, _, ledger_file, _ = self._seed(tmpdir, rate=100.00)
+            runner = CliRunner()
+
+            self._bill(runner)
+            invoice_number = self._invoice_row(db_path)["invoice_number"]
+            original_total = self._invoice_row(db_path)["total"]
+            original_csv_total = self._csv_total(ledger_file, invoice_number)
+
+            session_id = self._billed_session_ids(db_path)[0]
+            before = self._session_row(db_path, session_id)
+
+            result = runner.invoke(
+                zd.cli,
+                ["edit", str(session_id), "--date", "2026-05-05", "--force"],
+            )
+
+            self.assertNotEqual(result.exit_code, 0, msg=result.output)
+            self.assertIn(invoice_number, result.output)
+            self.assertIn("locked", result.output)
+
+            after = self._session_row(db_path, session_id)
+            self.assertEqual(after["work_date"], before["work_date"])
+            self.assertEqual(self._invoice_row(db_path)["total"], original_total)
+            self.assertEqual(
+                self._csv_total(ledger_file, invoice_number), original_csv_total
+            )
+
+    def test_edit_notes_on_billed_session_succeeds_without_force(self):
+        """--notes alone on a billed session succeeds with NO --force; the
+        invoice total is untouched since notes are not billing-relevant."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path, _, ledger_file, _ = self._seed(tmpdir, rate=100.00)
+            runner = CliRunner()
+
+            self._bill(runner)
+            invoice_number = self._invoice_row(db_path)["invoice_number"]
+            original_total = self._invoice_row(db_path)["total"]
+
+            session_id = self._billed_session_ids(db_path)[0]
+
+            result = runner.invoke(
+                zd.cli,
+                ["edit", str(session_id), "--notes", "corrected note"],
+            )
+
+            self.assertEqual(result.exit_code, 0, msg=result.output)
+            after = self._session_row(db_path, session_id)
+            self.assertEqual(after["notes"], "corrected note")
+            self.assertEqual(
+                self._invoice_row(db_path)["total"], original_total,
+                "a notes-only edit must never alter the billed total",
+            )
+
+    def _seed_with_expense(self, tmpdir, rate=100.00, expense_amount=75.00):
+        """Seed Acme (two unbilled sessions, per _seed) plus one unbilled
+        expense, so billing produces both a billed session and a billed
+        expense to exercise the lock on."""
+        db_path, config_path, ledger_file, invoices_dir = self._seed(tmpdir, rate=rate)
+        with zd.get_conn() as conn:
+            acme_id = conn.execute(
+                "SELECT id FROM clients WHERE slug = ?", ("acme",)
+            ).fetchone()["id"]
+            conn.execute(
+                "INSERT INTO expenses (client_id, expense_date, amount, description) "
+                "VALUES (?,?,?,?)",
+                (acme_id, "2026-04-10", expense_amount, "pre-existing expense"),
+            )
+        return db_path, config_path, ledger_file, invoices_dir
+
+    def test_edit_expense_amount_on_billed_expense_is_refused(self):
+        """--amount on a billed expense is refused even with --force."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path, _, ledger_file, _ = self._seed_with_expense(tmpdir, rate=100.00)
+            runner = CliRunner()
+
+            self._bill(runner)
+            invoice_number = self._invoice_row(db_path)["invoice_number"]
+            original_total = self._invoice_row(db_path)["total"]
+            original_csv_total = self._csv_total(ledger_file, invoice_number)
+
+            expense_ids = self._billed_expense_ids(db_path)
+            self.assertTrue(expense_ids, "expected at least one billed expense")
+            expense_id = expense_ids[0]
+            before = self._expense_row(db_path, expense_id)
+
+            result = runner.invoke(
+                zd.cli,
+                ["edit-expense", str(expense_id), "--amount", "999", "--force"],
+            )
+
+            self.assertNotEqual(result.exit_code, 0, msg=result.output)
+            self.assertIn(str(expense_id), result.output)
+            self.assertIn(invoice_number, result.output)
+            self.assertIn("locked", result.output)
+
+            after = self._expense_row(db_path, expense_id)
+            self.assertEqual(after["amount"], before["amount"])
+            self.assertEqual(self._invoice_row(db_path)["total"], original_total)
+            self.assertEqual(
+                self._csv_total(ledger_file, invoice_number), original_csv_total
+            )
+
+    def test_edit_expense_description_on_billed_expense_succeeds_without_force(self):
+        """--description alone on a billed expense succeeds with NO --force;
+        the invoice total is untouched."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path, _, ledger_file, _ = self._seed_with_expense(tmpdir, rate=100.00)
+            runner = CliRunner()
+
+            self._bill(runner)
+            invoice_number = self._invoice_row(db_path)["invoice_number"]
+            original_total = self._invoice_row(db_path)["total"]
+
+            expense_id = self._billed_expense_ids(db_path)[0]
+
+            result = runner.invoke(
+                zd.cli,
+                ["edit-expense", str(expense_id), "--description", "fixed"],
+            )
+
+            self.assertEqual(result.exit_code, 0, msg=result.output)
+            after = self._expense_row(db_path, expense_id)
+            self.assertEqual(after["description"], "fixed")
+            self.assertEqual(
+                self._invoice_row(db_path)["total"], original_total,
+                "a description-only edit must never alter the billed total",
+            )
+
+    def test_edit_unbilled_session_still_works(self):
+        """Regression: the billed-row lock must not spill onto unbilled rows;
+        `zd edit <unbilled-id> --hours ...` keeps working exactly as before."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path, _, _, _ = self._seed(tmpdir, rate=100.00)
+            runner = CliRunner()
+
+            # Nothing has been billed yet — both seeded sessions are unbilled.
+            conn = sqlite3.connect(db_path)
+            try:
+                session_id = conn.execute(
+                    "SELECT id FROM sessions WHERE invoice_id IS NULL ORDER BY id LIMIT 1"
+                ).fetchone()[0]
+            finally:
+                conn.close()
+
+            result = runner.invoke(
+                zd.cli, ["edit", str(session_id), "--hours", "4"],
+            )
+
+            self.assertEqual(result.exit_code, 0, msg=result.output)
+            after = self._session_row(db_path, session_id)
+            self.assertEqual(after["hours"], 4.0)
 
 
 if __name__ == "__main__":

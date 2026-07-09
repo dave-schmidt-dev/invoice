@@ -19,6 +19,7 @@ Usage:
 """
 
 import contextlib
+import math
 import shutil
 import sqlite3
 import sys
@@ -697,7 +698,7 @@ def cli(ctx):
       zd edit <id> --date 2026-03-20                # fix date on a session
       zd edit <id> --hours 2.0 --notes "updated"    # change hours and notes
       zd edit-expense <id> --amount 50.00            # fix expense amount
-      zd edit <id> --hours 1.0 --force               # edit even if already billed
+      zd edit <id> --notes "corrected note"           # works even if already billed
 
     \b
     REVIEWING WORK
@@ -763,7 +764,7 @@ def cmd_log(client, hours, notes, work_date):
         except ValueError:
             raise click.ClickException("Date must be YYYY-MM-DD format.")
 
-    if hours <= 0:
+    if not math.isfinite(hours) or hours <= 0:
         raise click.ClickException("Hours must be greater than 0.")
 
     with get_conn() as conn:
@@ -802,7 +803,7 @@ def cmd_expense(client, amount, description, expense_date):
         except ValueError:
             raise click.ClickException("Date must be YYYY-MM-DD format.")
 
-    if amount <= 0:
+    if not math.isfinite(amount) or amount <= 0:
         raise click.ClickException("Amount must be greater than 0.")
 
     with get_conn() as conn:
@@ -993,7 +994,11 @@ def cmd_sessions(client, show_all):
 @click.option("--date", "work_date", default=None, help="New date YYYY-MM-DD")
 @click.option("--hours", type=float, default=None, help="New hours value")
 @click.option("--notes", default=None, help="New notes text")
-@click.option("--force", is_flag=True, help="Allow editing billed sessions")
+@click.option(
+    "--force", is_flag=True,
+    help="Retained for backward compatibility; has no effect on billed sessions "
+         "(their hours/date are always locked per INV-3).",
+)
 def cmd_edit(session_id, work_date, hours, notes, force):
     """Edit an existing session.
 
@@ -1002,10 +1007,15 @@ def cmd_edit(session_id, work_date, hours, notes, force):
     any combination of date, hours, and notes.
 
     \b
+    Billed sessions (attached to an invoice) have their hours/date locked
+    to keep that invoice's total correct (INV-3); only --notes may be
+    edited on a billed session, with or without --force.
+
+    \b
     Examples:
       zd edit 14 --date 2026-03-20
       zd edit 14 --hours 2.0 --notes "updated description"
-      zd edit 14 --hours 1.0 --force   # edit even if already billed
+      zd edit 14 --notes "corrected note"      # works even if billed
     """
     if work_date is None and hours is None and notes is None:
         raise click.ClickException(
@@ -1018,23 +1028,27 @@ def cmd_edit(session_id, work_date, hours, notes, force):
         except ValueError:
             raise click.ClickException("Date must be YYYY-MM-DD format.")
 
-    if hours is not None and hours <= 0:
+    if hours is not None and (not math.isfinite(hours) or hours <= 0):
         raise click.ClickException("Hours must be greater than 0.")
 
     with get_conn() as conn:
         row = conn.execute(
-            """SELECT s.*, c.slug, c.name, c.rate
+            """SELECT s.*, c.slug, c.name, c.rate, i.invoice_number AS invoice_number
                FROM sessions s JOIN clients c ON c.id = s.client_id
+               LEFT JOIN invoices i ON i.id = s.invoice_id
                WHERE s.id = ?""",
             (session_id,),
         ).fetchone()
         if not row:
             raise click.ClickException(f"Session {session_id} not found.")
 
-        if row["invoice_id"] is not None and not force:
-            raise click.ClickException(
-                f"Session {session_id} is already billed. Use --force to edit anyway."
-            )
+        if row["invoice_id"] is not None:
+            if hours is not None or work_date is not None:
+                raise click.ClickException(
+                    f"Session {session_id} is billed on invoice {row['invoice_number']}. "
+                    "Its hours/date are locked to keep that invoice's total correct "
+                    "(INV-3). Only --notes can be edited on a billed session."
+                )
 
         updates = []
         values = []
@@ -1067,14 +1081,24 @@ def cmd_edit(session_id, work_date, hours, notes, force):
 @click.option("--date", "expense_date", default=None, help="New date YYYY-MM-DD")
 @click.option("--amount", type=float, default=None, help="New amount")
 @click.option("--description", default=None, help="New description")
-@click.option("--force", is_flag=True, help="Allow editing billed expenses")
+@click.option(
+    "--force", is_flag=True,
+    help="Retained for backward compatibility; has no effect on billed expenses "
+         "(their amount/date are always locked per INV-3).",
+)
 def cmd_edit_expense(expense_id, expense_date, amount, description, force):
     """Edit an existing expense.
+
+    \b
+    Billed expenses (attached to an invoice) have their amount/date locked
+    to keep that invoice's total correct (INV-3); only --description may be
+    edited on a billed expense, with or without --force.
 
     \b
     Examples:
       zd edit-expense 3 --amount 50.00
       zd edit-expense 3 --date 2026-03-20 --description "updated"
+      zd edit-expense 3 --description "fixed"    # works even if billed
     """
     if expense_date is None and amount is None and description is None:
         raise click.ClickException(
@@ -1087,23 +1111,27 @@ def cmd_edit_expense(expense_id, expense_date, amount, description, force):
         except ValueError:
             raise click.ClickException("Date must be YYYY-MM-DD format.")
 
-    if amount is not None and amount <= 0:
+    if amount is not None and (not math.isfinite(amount) or amount <= 0):
         raise click.ClickException("Amount must be greater than 0.")
 
     with get_conn() as conn:
         row = conn.execute(
-            """SELECT e.*, c.slug, c.name
+            """SELECT e.*, c.slug, c.name, i.invoice_number AS invoice_number
                FROM expenses e JOIN clients c ON c.id = e.client_id
+               LEFT JOIN invoices i ON i.id = e.invoice_id
                WHERE e.id = ?""",
             (expense_id,),
         ).fetchone()
         if not row:
             raise click.ClickException(f"Expense {expense_id} not found.")
 
-        if row["invoice_id"] is not None and not force:
-            raise click.ClickException(
-                f"Expense {expense_id} is already billed. Use --force to edit anyway."
-            )
+        if row["invoice_id"] is not None:
+            if amount is not None or expense_date is not None:
+                raise click.ClickException(
+                    f"Expense {expense_id} is billed on invoice {row['invoice_number']}. "
+                    "Its amount/date are locked to keep that invoice's total correct "
+                    "(INV-3). Only --description can be edited on a billed expense."
+                )
 
         updates = []
         values = []

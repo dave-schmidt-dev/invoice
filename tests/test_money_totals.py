@@ -12,9 +12,16 @@ Each test seeds a client whose rate + hours split across two DIFFERENT ISO
 weeks exercises that skew, drives `zd invoice` through CliRunner, scrapes the
 "Total:" line from the confirmation output, and asserts it equals BOTH the CSV
 ledger total AND the DB invoices.total.
+
+Task B.2 extends this file with a second gate: click's `type=float` happily
+parses "inf"/"-inf"/"nan" (Python's float() accepts them), so the numeric
+guards on zd log/expense/edit/edit-expense must explicitly reject non-finite
+values with math.isfinite() BEFORE any DB write — otherwise a non-finite
+hours/amount could reach INSERT/UPDATE and poison a total.
 """
 import csv as _csv
 import json
+import math
 import os
 import re
 import tempfile
@@ -214,6 +221,109 @@ class MoneyTotalsTests(unittest.TestCase):
             sessions=[("2026-04-06", 2.015), ("2026-04-13", 2.015)],
             expected_confirmation=Decimal("134.32"),
         )
+
+
+class NonFiniteNumericInputTests(unittest.TestCase):
+    """INV-4 (Task B.2): non-finite hours/amounts must never reach the DB.
+
+    Click's `type=float` converter calls Python's `float()`, which happily
+    parses "inf", "-inf", and "nan". The old `<= 0` guards let all three
+    through (inf > 0 is True; any comparison against nan is False, so
+    `nan <= 0` is False too). zd.py now checks `math.isfinite(...)` first on
+    every numeric input path (log, expense, edit, edit-expense) so a clean
+    ClickException fires before any INSERT/UPDATE.
+
+    Reuses MoneyTotalsTests' `_write_config`/`_seed` harness style (same
+    sandboxed HOME/ZD_DB/CONFIG_FILE patching) via composition rather than
+    inheritance, so this class does not also re-run the rounding-skew tests.
+    """
+
+    NON_FINITE = ["inf", "-inf", "nan"]
+
+    _write_config = MoneyTotalsTests._write_config
+    _seed = MoneyTotalsTests._seed
+
+    def _table_snapshot(self, db_path, table):
+        with patch.object(zd, "ZD_DB", db_path), zd.get_conn(readonly=True) as conn:
+            return [dict(r) for r in conn.execute(f"SELECT * FROM {table}").fetchall()]
+
+    def _assert_clean_rejection(self, result):
+        """A ClickException prints "Error: ..." and exits via SystemExit(1);
+        a raw ValueError/ArithmeticError propagating out of Click would
+        instead surface as some other exception type and print a traceback."""
+        self.assertNotEqual(result.exit_code, 0, msg=result.output)
+        self.assertNotIn("Traceback (most recent call last)", result.output)
+        self.assertIsInstance(result.exception, SystemExit, msg=result.output)
+        self.assertIn("Error:", result.output)
+
+    def test_log_rejects_non_finite_hours(self):
+        for bad in self.NON_FINITE:
+            with self.subTest(bad=bad):
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    db_path, _ = self._seed(tmpdir, rate=100.00, sessions=[])
+                    before = self._table_snapshot(db_path, "sessions")
+                    runner = CliRunner()
+                    result = runner.invoke(
+                        zd.cli, ["log", "roundco", bad, "bad hours"]
+                    )
+                    self._assert_clean_rejection(result)
+                    after = self._table_snapshot(db_path, "sessions")
+                    self.assertEqual(before, after, "no session row may be inserted")
+
+    def test_expense_rejects_non_finite_amount(self):
+        for bad in self.NON_FINITE:
+            with self.subTest(bad=bad):
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    db_path, _ = self._seed(tmpdir, rate=100.00, sessions=[])
+                    before = self._table_snapshot(db_path, "expenses")
+                    runner = CliRunner()
+                    result = runner.invoke(
+                        zd.cli, ["expense", "roundco", bad, "bad amount"]
+                    )
+                    self._assert_clean_rejection(result)
+                    after = self._table_snapshot(db_path, "expenses")
+                    self.assertEqual(before, after, "no expense row may be inserted")
+
+    def test_edit_rejects_non_finite_hours(self):
+        for bad in self.NON_FINITE:
+            with self.subTest(bad=bad):
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    db_path, _ = self._seed(
+                        tmpdir, rate=100.00, sessions=[("2026-04-06", 1.5)]
+                    )
+                    before = self._table_snapshot(db_path, "sessions")
+                    session_id = before[0]["id"]
+                    runner = CliRunner()
+                    result = runner.invoke(
+                        zd.cli, ["edit", str(session_id), "--hours", bad]
+                    )
+                    self._assert_clean_rejection(result)
+                    after = self._table_snapshot(db_path, "sessions")
+                    self.assertEqual(before, after, "session row must be unchanged")
+
+    def test_edit_expense_rejects_non_finite_amount(self):
+        for bad in self.NON_FINITE:
+            with self.subTest(bad=bad):
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    db_path, _ = self._seed(tmpdir, rate=100.00, sessions=[])
+                    with patch.object(zd, "ZD_DB", db_path), zd.get_conn() as conn:
+                        client_id = conn.execute(
+                            "SELECT id FROM clients WHERE slug = ?", ("roundco",)
+                        ).fetchone()["id"]
+                        conn.execute(
+                            "INSERT INTO expenses (client_id, expense_date, amount, "
+                            "description) VALUES (?,?,?,?)",
+                            (client_id, "2026-04-06", 42.00, "pre-existing"),
+                        )
+                    before = self._table_snapshot(db_path, "expenses")
+                    expense_id = before[0]["id"]
+                    runner = CliRunner()
+                    result = runner.invoke(
+                        zd.cli, ["edit-expense", str(expense_id), "--amount", bad]
+                    )
+                    self._assert_clean_rejection(result)
+                    after = self._table_snapshot(db_path, "expenses")
+                    self.assertEqual(before, after, "expense row must be unchanged")
 
 
 if __name__ == "__main__":
