@@ -21,6 +21,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import unicodedata
 import urllib.parse
 from contextlib import contextmanager
 from datetime import date, datetime
@@ -716,6 +717,39 @@ _LABEL_W = _DESC_W + _HRS_W + _RATE_W  # 145 mm
 _FULL_W = _LABEL_W + _AMT_W            # 170 mm — full table width
 
 
+# Typographic characters that appear routinely in text pasted from Notes/Mail
+# but have no latin-1 codepoint. Map them to sensible ASCII before the harsher
+# NFKD + latin-1 "replace" pass so common punctuation survives readably instead
+# of collapsing to "?".
+_TYPOGRAPHIC_MAP = {
+    "—": "-",   # — em dash
+    "–": "-",   # – en dash
+    "“": '"',   # " left double quote
+    "”": '"',   # " right double quote
+    "‘": "'",   # ' left single quote
+    "’": "'",   # ' right single quote
+    "…": "...",  # … ellipsis
+    "•": "*",   # • bullet
+}
+_TYPOGRAPHIC_TABLE = {ord(k): v for k, v in _TYPOGRAPHIC_MAP.items()}
+
+
+def _latin1_safe(s):
+    """Return `s` reduced to characters the latin-1 core PDF font can render.
+
+    fpdf2's built-in Helvetica is latin-1 only; any other codepoint raises
+    FPDFUnicodeEncodingException at draw time. This maps common typographic
+    punctuation to ASCII, then NFKD-normalizes and encodes to latin-1 with
+    "replace" so anything still unrepresentable becomes "?" rather than crashing.
+    Non-str input is returned unchanged (callers may pass through numbers/None).
+    """
+    if not isinstance(s, str):
+        return s
+    cleaned = s.translate(_TYPOGRAPHIC_TABLE)
+    cleaned = unicodedata.normalize("NFKD", cleaned)
+    return cleaned.encode("latin-1", "replace").decode("latin-1")
+
+
 class _InvoicePDF(FPDF):
     """FPDF subclass that renders a centered 'Page X of Y' footer on every page."""
 
@@ -803,9 +837,28 @@ def generate_pdf(invoice_number, invoice_date, config, line_items, output_path,
     payment = config.get("payment", {})
     header_cfg = config.get("invoice_header", {})
 
+    def _safe_identity(value, field_name):
+        """Sanitize an IDENTITY / ADDRESS / PAYMENT string and WARN (stderr) if
+        it was actually altered. Unlike free-text, silently corrupting a legal
+        name or payment reference is unacceptable — so name each changed field.
+        No-op (and no warning) for already-latin-1 values."""
+        cleaned = _latin1_safe(value)
+        if cleaned != value:
+            click.echo(
+                f"Warning: non-latin-1 character(s) in {field_name} were "
+                f"transliterated for the PDF: {value!r} -> {cleaned!r}",
+                err=True,
+            )
+        return cleaned
+
+    def _safe_identity_lines(lines, field_name):
+        """Apply `_safe_identity` to each line of an identity/address block."""
+        return [_safe_identity(line, f"{field_name} line {i + 1}")
+                for i, line in enumerate(lines)]
+
     # ---- Header ----
     logo_path = header_cfg.get("logo_path", "")
-    title_text = header_cfg.get("title") or "INVOICE"
+    title_text = _safe_identity(header_cfg.get("title") or "INVOICE", "invoice title")
 
     # Logo on left, title on right
     if logo_path and Path(logo_path).exists():
@@ -825,7 +878,8 @@ def generate_pdf(invoice_number, invoice_date, config, line_items, output_path,
     pdf.cell(0, 5, f"Invoice #: {invoice_number}", align="R", new_x="LMARGIN", new_y="NEXT")
     pdf.cell(0, 5, f"Date: {invoice_date}", align="R", new_x="LMARGIN", new_y="NEXT")
     if payment_terms:
-        pdf.cell(0, 5, f"Payment Terms: {payment_terms}", align="R", new_x="LMARGIN", new_y="NEXT")
+        # FREE-TEXT terms string (e.g. "Net 30 - due on receipt"); transliterate silently.
+        pdf.cell(0, 5, f"Payment Terms: {_latin1_safe(payment_terms)}", align="R", new_x="LMARGIN", new_y="NEXT")
     pdf.ln(27)  # Tripled again from 18 to 27 for maximum white space after header
 
     # ---- From / Bill To ----
@@ -838,8 +892,10 @@ def generate_pdf(invoice_number, invoice_date, config, line_items, output_path,
     pdf.ln(2)
 
     pdf.set_font("Helvetica", "", 10)
-    payee_ls = _payee_lines(payee)
-    client_ls = _client_lines(client)
+    # IDENTITY / ADDRESS: payee (From) and client (Bill To) blocks. Transliterate
+    # but WARN per changed line — a corrupted legal name must never be silent.
+    payee_ls = _safe_identity_lines(_payee_lines(payee), "payee (From)")
+    client_ls = _safe_identity_lines(_client_lines(client), "client (Bill To)")
 
     for i in range(max(len(payee_ls), len(client_ls))):
         left = payee_ls[i] if i < len(payee_ls) else ""
@@ -867,7 +923,10 @@ def generate_pdf(invoice_number, invoice_date, config, line_items, output_path,
     subtotal = Decimal("0.00")
     shade = False
     for i, item in enumerate(line_items):
-        description = str(item["description"]).replace("\n", " ")
+        # FREE-TEXT: line-item descriptions are pasted from Notes/Mail and are
+        # the actual crash trigger. Transliterate SILENTLY — mangling an em dash
+        # in a description is harmless, and warning on every paste would be noise.
+        description = _latin1_safe(str(item["description"]).replace("\n", " "))
         hours = _to_decimal(item["hours"], "hours")
         rate = _to_money_decimal(item["rate"], "rate")
         amount = _to_money_decimal(item["amount"], "amount")
@@ -946,17 +1005,20 @@ def generate_pdf(invoice_number, invoice_date, config, line_items, output_path,
     if payment_description is not None:
         payment_info["description"] = payment_description
     
+    # PAYMENT: transliterate but WARN per field — a corrupted routing/account
+    # reference silently is exactly the failure mode this guards against.
     payment_lines = []
     if payment_info.get("description"):
-        payment_lines.append(payment_info["description"])
+        payment_lines.append(_safe_identity(payment_info["description"], "payment description"))
     if payment_info.get("bank_name"):
-        payment_lines.append(f"Bank: {payment_info['bank_name']}")
+        payment_lines.append(f"Bank: {_safe_identity(payment_info['bank_name'], 'payment bank_name')}")
     if payment_info.get("routing"):
-        payment_lines.append(f"Routing #: {payment_info['routing']}")
+        payment_lines.append(f"Routing #: {_safe_identity(payment_info['routing'], 'payment routing')}")
     if payment_info.get("account"):
-        payment_lines.append(f"Account #: {payment_info['account']}")
+        payment_lines.append(f"Account #: {_safe_identity(payment_info['account'], 'payment account')}")
 
-    contact_lines = _payee_contact_lines(payee)
+    # CONTACT (identity): payee email/phone shown in the footer.
+    contact_lines = _safe_identity_lines(_payee_contact_lines(payee), "payee contact")
 
     if payment_lines or contact_lines:
         pdf.ln(12)
