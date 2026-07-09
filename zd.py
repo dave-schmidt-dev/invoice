@@ -555,7 +555,10 @@ def group_sessions_by_week(sessions, summary_provider=None):
     result = []
     for label, data in weeks.items():
         rate = data["rate"]
-        hours = round(data["hours"], 2)
+        # Use the raw accumulated hours — to_money already quantizes the
+        # amount to cents (Decimal/ROUND_HALF_UP). A pre-round of hours here
+        # is an extra rounding step that only adds skew (INV-4).
+        hours = data["hours"]
         amount = float(to_money(hours * rate))
         description = data["label"]
         if summary_provider is not None:
@@ -1314,11 +1317,35 @@ def cmd_invoice(client, invoice_date, invoice_month, summarize_weeks, regenerate
             click.echo(f"  Month: {invoice_month}")
         click.echo(f"  {len(sessions)} sessions → {len(line_items)} weekly line items")
 
-        # Confirm before generating
+        # Confirm before generating.
+        #
+        # The confirmation total MUST equal the persisted total by
+        # construction (INV-4). generate_pdf derives the invoice total by
+        # summing to_money(item["amount"]) over every line item and then
+        # quantizing the running sum once (invoice.py: subtotal += amount;
+        # subtotal = _to_money_decimal(subtotal)). Reproduce that here from
+        # the SAME line_items that are handed to generate_pdf, so the number
+        # the user approves is exactly the number written to the PDF/CSV/DB.
+        #
+        # Summing the per-week to_money(hours*rate) amounts is NOT the same as
+        # to_money(total_hours * rate) (sum-of-rounded != rounded-of-sum), so
+        # the old aggregate labor figure could diverge from what was billed.
         total_hours = sum(s["hours"] for s in sessions)
-        total_labor = to_money(total_hours * c["rate"])
-        total_exp = to_money(sum(e["amount"] for e in expenses))
-        total = total_labor + total_exp
+        # Labor = per-week line items (hours or rate set); expenses = the rest.
+        total_labor = sum(
+            (to_money(str(li["amount"])) for li in line_items
+             if li.get("hours") or li.get("rate")),
+            Decimal("0.00"),
+        )
+        total_exp = sum(
+            (to_money(str(li["amount"])) for li in line_items
+             if not li.get("hours") and not li.get("rate")),
+            Decimal("0.00"),
+        )
+        total = to_money(sum(
+            (to_money(str(li["amount"])) for li in line_items),
+            Decimal("0.00"),
+        ))
         click.echo(f"  {total_hours:.1f} hours @ ${c['rate']:.2f}/hr = ${total_labor:,.2f}")
         if total_exp:
             click.echo(f"  Expenses: ${total_exp:,.2f}")
