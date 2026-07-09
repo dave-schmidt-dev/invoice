@@ -22,11 +22,14 @@ Run this project through `./invoice-wrapper` or the project virtual environment.
 - Automatic grouping of sessions into calendar-week line items
 - PDF invoice generation that integrates with invoice.py
 - Month-scoped invoicing for a single client (`zd invoice acme --month 2026-04`)
+- Flat-rate invoicing for a fixed amount instead of hours×rate (`zd invoice acme --flat 1500 --description "Monthly retainer"`)
 - Optional local Gemma weekly summaries for invoice line items (`--summarize-weeks`)
 - Regenerate invoices after config or data corrections (`--regenerate`)
-- Sync paid status back to invoice.py's CSV ledger
+- Sync paid status back to invoice.py's CSV ledger, with an explicit paid date (`zd paid 2026-0001 --date 2026-05-01`)
+- Reconcile the CSV ledger back to the authoritative DB (`zd reconcile [--fix]`)
 - Auto-sync new clients to `~/.invoice_config.json` for invoice generation
 - Automatic timestamped backups of DB, config, and CSV before writes (last 20 kept)
+- Rotating debug logs on demand (`--debug`, written to `/tmp/zd.log`)
 - Portable wrappers: both `invoice-wrapper` and `zd-wrapper` resolve symlinks for cross-computer compatibility
 
 ## Requirements
@@ -158,11 +161,19 @@ zd invoice acme --month 2026-04 --date 2026-04-30
 # Generate month-scoped invoice with local Gemma weekly summaries
 zd invoice acme --month 2026-04 --date 2026-04-30 --summarize-weeks
 
+# Bill a fixed amount instead of hours×rate (e.g. a flat monthly retainer)
+zd invoice acme --flat 1500 --description "Monthly retainer, April 2026"
+
 # Regenerate an existing invoice (e.g. after fixing config or editing sessions)
 zd invoice acme --regenerate 2026-0002
 
-# Mark paid when check arrives
+# Mark paid when check arrives (records today's date, or pass --date)
 zd paid 2026-0001
+zd paid 2026-0001 --date 2026-05-01
+
+# Reconcile the CSV ledger against the authoritative DB (report only)
+zd reconcile
+zd reconcile --fix        # append missing rows / sync Paid status
 ```
 
 The `zd sessions` command shows an ID column for each session — use these IDs with `zd edit`. Omitting the client argument shows sessions across all clients; `--all` includes already-billed sessions.
@@ -202,6 +213,35 @@ Requirements:
 If a server is already responding at `base_url` when zd starts, zd will use it instead of spawning a new one (and won't shut it down at the end — that server belongs to someone else). If spawning fails, or if `/health` doesn't respond within the startup timeout, zd aborts cleanly. If the summary API call fails for any other reason, invoice generation falls back to the plain `Week of ...` labels.
 
 Environment overrides: `ZD_SUMMARY_BASE_URL`, `ZD_SUMMARY_MODEL`, `ZD_SUMMARY_MODEL_PATH`, `ZD_SUMMARY_LOG`, `ZD_SUMMARY_TIMEOUT`.
+
+### Flat-rate invoicing
+
+`zd invoice <client> --flat AMOUNT --description "..."` bills a single fixed
+amount instead of hours×rate — useful for a flat monthly retainer or a
+milestone. The invoice total is exactly `AMOUNT` regardless of logged hours,
+and `--description` (required) becomes the single line item. Scoped unbilled
+sessions are still marked billed so they don't get re-billed later;
+reimbursable expenses are left unbilled for a normal invoice. `--flat` cannot
+be combined with `--summarize-weeks`. The amount is parsed as `Decimal` and
+rejected if it is non-positive or too large to represent as money.
+
+### Reconciling the ledger against the DB
+
+The zd SQLite database is authoritative; the CSV ledger is a projection that
+zd keeps converging to it automatically after each invoice/paid action. `zd
+reconcile` reports any benign DB-ahead-of-CSV drift (a ledger row that never
+got appended, or a DB `Paid` status not yet mirrored to the CSV) without
+touching anything; `zd reconcile --fix` applies the repair (append the missing
+row, sync the status). It only ever heals in the safe direction — it never
+removes or rewrites an existing ledger row, so it cannot double-bill.
+
+### Debug logging
+
+Both CLIs log at `WARNING` and above to `/tmp/zd.log` and `/tmp/invoice.log`
+(rotating, 1 MB × 2 backups, created `0600`). Pass `--debug` to either tool to
+drop the threshold to `DEBUG` for that run. Logs are written to be free of
+client identities, notes, amounts, and invoice numbers. Override the log path
+with the `ZD_LOG_FILE` / `INVOICE_LOG_FILE` environment variables.
 
 ### Tab completion
 
@@ -309,6 +349,18 @@ Both `zd` and `invoice.py` automatically create timestamped backups before writi
 - Critical rewrites use atomic replace patterns.
 - CSV text fields are protected against spreadsheet formula injection.
 - Automatic backups before every destructive write (last 20 retained).
+- Debug/summary logs are created `0600` and written to be PII-free.
+
+### Payment and banking details
+
+Payment instructions — including any bank name, routing, and account numbers
+shown on an invoice — live in `~/.invoice_config.json`, which stays **outside
+the repository** (never committed; written `0600`). This tool keeps them in
+that local config file rather than a dedicated secrets manager: it is a
+grandfathered legacy config-based project, and migrating these values into a
+secrets store is deferred to the next storage migration. Until then, protect
+`~/.invoice_config.json` like any other credential file — do not copy it into
+the repo, a backup that syncs to a shared location, or a paste buffer.
 
 ### No PII in the project
 
@@ -334,11 +386,27 @@ placeholders.
 
 A version-controlled pre-commit hook (`hooks/pre-commit`) automatically blocks
 any staged diff that adds content matching patterns in `hooks/pii-patterns.txt`.
-Install it on this clone with:
+Install it on this clone with the idempotent helper (or the raw `git config`
+it wraps):
 
 ```bash
-git config core.hooksPath hooks
+./scripts/install-hooks.sh        # points core.hooksPath at hooks/
+# equivalent to: git config core.hooksPath hooks
 ```
+
+The pre-commit hook only sees the staged diff. To audit everything already
+committed, run the full-tree scanner:
+
+```bash
+./scripts/scan-pii.sh
+```
+
+Read its honesty header before trusting a clean result: it matches
+names/tokens only and **cannot** detect financial identifiers (retainer
+amounts, rates, invoice numbers), because sanctioned placeholders are
+digit-shape-identical to real values. The durable control for those is keeping
+operational files out of the repo (see `.gitignore`) plus human review — a
+clean scan does not by itself mean "PII-safe."
 
 If the hook blocks, fix the staged content — do not bypass with `--no-verify`.
 When you discover a new leak vector, add a pattern to `hooks/pii-patterns.txt`
