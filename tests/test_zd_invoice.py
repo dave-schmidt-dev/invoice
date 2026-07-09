@@ -310,6 +310,177 @@ class ZdInvoiceTests(unittest.TestCase):
 
         self.assertEqual(line_items[0]["description"], "Week of Apr 6")
 
+    # ------------------------------------------------------------------
+    # Task C.7 — summary-server errors fall back to plain week labels
+    # ------------------------------------------------------------------
+
+    def test_group_sessions_by_week_falls_back_when_summary_server_unavailable(self):
+        """A SummaryServerError raised by the provider (not just
+        WeekSummaryError) must also degrade to the plain week label
+        instead of propagating and crashing the invoice."""
+        sessions = [
+            {"work_date": "2026-04-06", "hours": 1.0, "rate": 100.0, "notes": "reviewed evidence"},
+        ]
+
+        def server_down_provider(label, week_sessions):
+            raise zd.SummaryServerError("llama-server not found on PATH")
+
+        line_items = zd.group_sessions_by_week(sessions, summary_provider=server_down_provider)
+
+        self.assertEqual(line_items[0]["description"], "Week of Apr 6")
+
+    def test_invoice_falls_back_to_plain_labels_when_summary_server_unavailable(self):
+        """End-to-end: if _summary_server_context raises SummaryServerError
+        on entry (server can't start), `zd invoice` must still exit 0 and
+        produce line items with plain 'Week of ...' labels rather than
+        crashing the whole invoice."""
+        import csv as _csv
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path, config_path = self._seed_invoice_data(tmpdir)
+            with open(config_path) as f:
+                config = json.load(f)
+            csv_path = Path(config["storage"]["ledger_file"])
+            runner = CliRunner()
+
+            with patch.object(
+                zd, "_summary_server_context",
+                side_effect=zd.SummaryServerError("llama-server not found on PATH"),
+            ):
+                result = runner.invoke(
+                    zd.cli,
+                    ["invoice", "acme", "--month", "2026-04", "--date", "2026-04-30",
+                     "--summarize-weeks"],
+                    input="y\n",
+                )
+
+            self.assertEqual(result.exit_code, 0, msg=result.output)
+            self.assertIn(
+                "Summary server unavailable (llama-server not found on PATH); "
+                "using plain week labels.",
+                result.output,
+            )
+
+            # The invoice still generated: the CSV ledger row's line_items
+            # column carries the plain "Week of ..." labels (no " - <summary>"
+            # suffix) for both weeks in the April scope — 2026-04-01 kickoff
+            # (week of Mar 30) and 2026-04-30 closeout (week of Apr 27).
+            with patch.object(zd, "ZD_DB", db_path), zd.get_conn() as conn:
+                inv_num = conn.execute(
+                    "SELECT invoice_number FROM invoices ORDER BY id DESC LIMIT 1"
+                ).fetchone()["invoice_number"]
+            with open(csv_path, newline="") as f:
+                csv_rows = list(_csv.DictReader(f))
+            match = next(
+                (r for r in csv_rows if r.get("invoice_number") == inv_num), None
+            )
+            self.assertIsNotNone(match, "expected the invoice in the CSV ledger")
+            self.assertIn("Week of Mar 30", match["line_items"])
+            self.assertIn("Week of Apr 27", match["line_items"])
+
+    def test_invoice_falls_back_to_plain_labels_when_summary_spawn_raises_oserror(self):
+        """The summary-server spawn does mkdir/open/Popen, which can raise
+        OSError (FileNotFoundError if llama-server vanished, PermissionError if
+        the log dir is unwritable). That must degrade to plain labels, not
+        crash `zd invoice` with a raw traceback."""
+        import csv as _csv
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path, config_path = self._seed_invoice_data(tmpdir)
+            with open(config_path) as f:
+                config = json.load(f)
+            csv_path = Path(config["storage"]["ledger_file"])
+            runner = CliRunner()
+
+            with patch.object(
+                zd, "_summary_server_context",
+                side_effect=FileNotFoundError("llama-server: No such file or directory"),
+            ):
+                result = runner.invoke(
+                    zd.cli,
+                    ["invoice", "acme", "--month", "2026-04", "--date", "2026-04-30",
+                     "--summarize-weeks"],
+                    input="y\n",
+                )
+
+            self.assertEqual(result.exit_code, 0, msg=result.output)
+            self.assertNotIsInstance(result.exception, OSError)
+            self.assertIn("using plain week labels.", result.output)
+            with open(csv_path, newline="") as f:
+                csv_rows = list(_csv.DictReader(f))
+            self.assertTrue(csv_rows, "expected the invoice in the CSV ledger")
+            self.assertIn("Week of Mar 30", csv_rows[-1]["line_items"])
+
+    def test_invoice_rejects_malformed_date_with_clean_error(self):
+        """A malformed --date must fail as a clean ClickException (as cmd_log
+        does), never a raw ValueError traceback, and write no invoice. The
+        numbering step parses --date via date.fromisoformat, so this guards
+        that path."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path, _ = self._seed_invoice_data(tmpdir)
+            runner = CliRunner()
+
+            result = runner.invoke(
+                zd.cli,
+                ["invoice", "acme", "--date", "2026-13-45"],
+                input="y\n",
+            )
+
+            self.assertNotEqual(result.exit_code, 0, msg=result.output)
+            self.assertIn("Date must be YYYY-MM-DD", result.output)
+            # A clean ClickException, not a leaked ValueError from fromisoformat.
+            self.assertNotIsInstance(result.exception, ValueError)
+            with patch.object(zd, "ZD_DB", db_path), zd.get_conn(readonly=True) as conn:
+                count = conn.execute("SELECT COUNT(*) FROM invoices").fetchone()[0]
+            self.assertEqual(count, 0, "no invoice row may be written on a bad date")
+
+    # ------------------------------------------------------------------
+    # Task C.8 — week grouping keyed by full Monday ISO date
+    # (fix cross-year collision)
+    # ------------------------------------------------------------------
+
+    def test_week_key_is_year_inclusive_monday_iso_date(self):
+        # 2026-01-06 and 2032-01-08 both fall in a week whose Monday is
+        # "Jan 5" (week_label has no year), but the Mondays themselves are
+        # different years: 2026-01-05 vs 2032-01-05.
+        self.assertEqual(zd.week_label("2026-01-06"), "Week of Jan 5")
+        self.assertEqual(zd.week_label("2032-01-08"), "Week of Jan 5")
+        self.assertEqual(zd.week_key("2026-01-06"), "2026-01-05")
+        self.assertEqual(zd.week_key("2032-01-08"), "2032-01-05")
+
+    def test_group_sessions_by_week_does_not_merge_same_label_across_years(self):
+        """Two sessions that produce the IDENTICAL week_label string
+        ("Week of Jan 5") but fall in different years (2026 and 2032) must
+        stay as TWO separate line items — grouping must key off the full
+        Monday ISO date, not the year-less label string."""
+        sessions = [
+            {"work_date": "2026-01-06", "hours": 3.0, "rate": 100.0, "notes": "2026 work"},
+            {"work_date": "2032-01-08", "hours": 5.0, "rate": 100.0, "notes": "2032 work"},
+        ]
+
+        line_items = zd.group_sessions_by_week(sessions)
+
+        self.assertEqual(len(line_items), 2)
+        # Both share the same displayed label...
+        self.assertEqual(line_items[0]["description"], "Week of Jan 5")
+        self.assertEqual(line_items[1]["description"], "Week of Jan 5")
+        # ...but hours must NOT be summed together (no silent billing merge).
+        hours = sorted(li["hours"] for li in line_items)
+        self.assertEqual(hours, [3.0, 5.0])
+
+    def test_group_sessions_by_week_sorts_cross_year_weeks_chronologically(self):
+        """Line items must emit in chronological order by the Monday ISO
+        key, even when sessions are inserted out of order and share a
+        week_label string across years."""
+        sessions = [
+            {"work_date": "2032-01-08", "hours": 5.0, "rate": 100.0, "notes": "later year"},
+            {"work_date": "2026-01-06", "hours": 3.0, "rate": 100.0, "notes": "earlier year"},
+        ]
+
+        line_items = zd.group_sessions_by_week(sessions)
+
+        self.assertEqual(len(line_items), 2)
+        self.assertEqual(line_items[0]["hours"], 3.0)  # 2026 week first
+        self.assertEqual(line_items[1]["hours"], 5.0)  # 2032 week second
+
     def test_local_gemma_summary_hits_configured_base_url_and_model(self):
         sessions = [
             {"work_date": "2026-04-06", "hours": 1.0, "rate": 100.0, "notes": "reviewed evidence"},
@@ -711,6 +882,123 @@ class ZdInvoiceTests(unittest.TestCase):
         self.assertEqual(result.exit_code, 0, msg=result.output)
         self.assertIn("--flat AMOUNT", result.output)
         self.assertIn("--description", result.output)
+
+    # ------------------------------------------------------------------
+    # Task C.9 — invoice numbering: derive year from invoice date +
+    # integer comparison (not date.today() / lexical string max)
+    # ------------------------------------------------------------------
+
+    def _seed_invoice_row_for_numbering(self, conn, client_id, invoice_number, invoice_date):
+        conn.execute(
+            """INSERT INTO invoices
+               (invoice_number, client_id, invoice_date, total, status)
+               VALUES (?, ?, ?, ?, ?)""",
+            (invoice_number, client_id, invoice_date, 100.00, "Sent"),
+        )
+
+    def test_next_invoice_number_past_9999_uses_integer_not_lexical_max(self):
+        """With a DB/CSV containing 2026-9999, the next number for a
+        2026-dated invoice must be 2026-10000 (integer max + 1), never a
+        lexical miscompare (where the string "2026-10000" sorts below
+        "2026-9999") and never a reset back to 2026-0001."""
+        import csv as _csv
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path, config_path = self._seed_invoice_data(tmpdir)
+            with open(config_path) as f:
+                config = json.load(f)
+            csv_path = Path(config["storage"]["ledger_file"])
+
+            with patch.object(zd, "ZD_DB", db_path), zd.get_conn() as conn:
+                acme_id = conn.execute(
+                    "SELECT id FROM clients WHERE slug = ?", ("acme",)
+                ).fetchone()["id"]
+                self._seed_invoice_row_for_numbering(conn, acme_id, "2026-9999", "2026-01-01")
+
+            # Also seed the CSV ledger with the same number so both stores
+            # agree on the existing max.
+            fieldnames = ["invoice_number", "client", "invoice_date", "total", "status", "pdf_file"]
+            with open(csv_path, "w", newline="") as f:
+                writer = _csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerow({
+                    "invoice_number": "2026-9999",
+                    "client": "Acme Corp",
+                    "invoice_date": "2026-01-01",
+                    "total": "100.00",
+                    "status": "Sent",
+                    "pdf_file": "",
+                })
+
+            runner = CliRunner()
+            result = runner.invoke(
+                zd.cli,
+                ["invoice", "acme", "--date", "2026-06-01"],
+                input="y\n",
+            )
+
+            self.assertEqual(result.exit_code, 0, msg=result.output)
+            self.assertIn("Generating invoice 2026-10000 for Acme Corp", result.output)
+
+            with patch.object(zd, "ZD_DB", db_path), zd.get_conn() as conn:
+                new_row = conn.execute(
+                    "SELECT invoice_number FROM invoices WHERE invoice_date = ?",
+                    ("2026-06-01",),
+                ).fetchone()
+            self.assertEqual(new_row["invoice_number"], "2026-10000")
+
+    def test_backdated_invoice_gets_number_from_its_own_year_not_current_year(self):
+        """A --date 2025-06-30 invoice must be numbered from 2025's max
+        (or 2025-0001 if none), NOT the current year's series, even
+        though the DB already has 2026-000x invoices."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path, _ = self._seed_invoice_data(tmpdir)
+
+            with patch.object(zd, "ZD_DB", db_path), zd.get_conn() as conn:
+                acme_id = conn.execute(
+                    "SELECT id FROM clients WHERE slug = ?", ("acme",)
+                ).fetchone()["id"]
+                self._seed_invoice_row_for_numbering(conn, acme_id, "2026-0001", "2026-01-15")
+                self._seed_invoice_row_for_numbering(conn, acme_id, "2026-0002", "2026-02-15")
+
+            runner = CliRunner()
+            result = runner.invoke(
+                zd.cli,
+                ["invoice", "acme", "--date", "2025-06-30"],
+                input="y\n",
+            )
+
+            self.assertEqual(result.exit_code, 0, msg=result.output)
+            self.assertIn("Generating invoice 2025-0001 for Acme Corp", result.output)
+
+            with patch.object(zd, "ZD_DB", db_path), zd.get_conn() as conn:
+                new_row = conn.execute(
+                    "SELECT invoice_number FROM invoices WHERE invoice_date = ?",
+                    ("2025-06-30",),
+                ).fetchone()
+            self.assertEqual(new_row["invoice_number"], "2025-0001")
+
+    def test_backdated_invoice_continues_its_own_years_series(self):
+        """A backdated invoice whose year already has prior invoices gets
+        the next suffix within THAT year, not year 2026's series."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path, _ = self._seed_invoice_data(tmpdir)
+
+            with patch.object(zd, "ZD_DB", db_path), zd.get_conn() as conn:
+                acme_id = conn.execute(
+                    "SELECT id FROM clients WHERE slug = ?", ("acme",)
+                ).fetchone()["id"]
+                self._seed_invoice_row_for_numbering(conn, acme_id, "2025-0005", "2025-03-01")
+                self._seed_invoice_row_for_numbering(conn, acme_id, "2026-0001", "2026-01-15")
+
+            runner = CliRunner()
+            result = runner.invoke(
+                zd.cli,
+                ["invoice", "acme", "--date", "2025-06-30"],
+                input="y\n",
+            )
+
+            self.assertEqual(result.exit_code, 0, msg=result.output)
+            self.assertIn("Generating invoice 2025-0006 for Acme Corp", result.output)
 
     # ------------------------------------------------------------------
     # Task A.1 — idempotent schema migration (_migrate)

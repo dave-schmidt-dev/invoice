@@ -34,28 +34,57 @@ from click.testing import CliRunner
 import zd
 
 
-class _PinNextNumberLoader:
-    """Wraps the real invoice.py loader to pin get_next_invoice_number.
+class _LedgerRaceLoader:
+    """Wraps the real invoice.py loader to simulate a concurrent ledger writer.
 
     cmd_invoice loads invoice.py fresh each call via
     importlib.util.spec_from_file_location -> module_from_spec ->
-    loader.exec_module. The invoice-number generator is collision-avoiding by
-    construction (it returns max(existing)+1 across both stores), so a natural
-    duplicate cannot occur. To exercise the INV-5 defense-in-depth guard we pin
-    the generator to a value we have pre-seeded, leaving every other invoice.py
-    helper untouched.
+    loader.exec_module. Its invoice-number generator is collision-avoiding by
+    construction (the next number is max(existing)+1 across BOTH the CSV ledger
+    and the zd DB), so a duplicate can never arise in single-process use. The
+    Step-1 INV-5 guard therefore only ever fires on a RACE: another `zd invoice`
+    (or a manual ledger edit) appends the next number AFTER cmd_invoice's
+    max-scan but BEFORE its dup-check under the ledger lock.
+
+    We reproduce that race by wrapping `_read_csv_with_headers` so the FIRST
+    read (the numbering max-scan) sees the ledger as-seeded, but every read
+    after it (the Step-1 dup-check read) returns an EXTRA row carrying the very
+    number cmd_invoice is about to try. The on-disk CSV is never modified — the
+    injection lives only in the returned rows — so a passing test also proves
+    the guard aborted before any durable write. Every other invoice.py helper
+    is left untouched.
     """
 
-    def __init__(self, inner, pinned_number):
+    def __init__(self, inner, raced_number):
         self._inner = inner
-        self._pinned = pinned_number
+        self._raced = raced_number
 
     def create_module(self, spec):
         return self._inner.create_module(spec)
 
     def exec_module(self, module):
         self._inner.exec_module(module)
-        module.get_next_invoice_number = lambda csv_file: self._pinned
+        real_read = module._read_csv_with_headers
+        raced = self._raced
+        state = {"reads": 0}
+
+        def racing_read(csv_path):
+            rows, headers = real_read(csv_path)
+            state["reads"] += 1
+            # Read #1 = numbering max-scan (sees the ledger as-seeded). Read #2+
+            # = the dup-check read, where a competing writer has "already"
+            # appended `raced`, forcing the collision the guard must catch.
+            if state["reads"] >= 2:
+                inv_key = (
+                    module._csv_field_key(headers, "invoice_number")
+                    or "invoice_number"
+                )
+                extra = {h: "" for h in headers}
+                extra[inv_key] = raced
+                rows = list(rows) + [extra]
+            return rows, headers
+
+        module._read_csv_with_headers = racing_read
 
 
 class InvoiceTransactionIntegrityTests(unittest.TestCase):
@@ -295,12 +324,14 @@ class InvoiceTransactionIntegrityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path, _, ledger_file, invoices_dir = self._seed(tmpdir)
 
-            # Pre-seed the CSV ledger with a row numbered 2026-0001 and pin the
-            # invoice-number generator to that same value (the DB has no
-            # invoices, so db_next is also 2026-0001). Step 1 must catch the
-            # collision against the CSV ledger and abort BEFORE any durable
-            # write.
-            dup_number = "2026-0001"
+            # Pre-seed the CSV ledger with 2026-0001 (DB has no invoices), so
+            # cmd_invoice's max-scan deterministically computes the next number
+            # as 2026-0002. Then simulate a concurrent writer that appends that
+            # very 2026-0002 between the max-scan and the Step-1 dup-check (see
+            # _LedgerRaceLoader). The guard must catch the collision against the
+            # CSV ledger and abort BEFORE any durable write.
+            seeded_number = "2026-0001"
+            raced_number = "2026-0002"  # = seeded max (1) + 1, the number tried
             with open(ledger_file, "w", newline="", encoding="utf-8") as f:
                 writer = _csv.DictWriter(
                     f,
@@ -311,7 +342,7 @@ class InvoiceTransactionIntegrityTests(unittest.TestCase):
                 )
                 writer.writeheader()
                 writer.writerow({
-                    "invoice_number": dup_number,
+                    "invoice_number": seeded_number,
                     "date": "2026-01-01",
                     "payee_name": "Zero Delta LLC",
                     "payer_name": "Acme Corp",
@@ -327,14 +358,14 @@ class InvoiceTransactionIntegrityTests(unittest.TestCase):
 
             real_spec_from_file = importlib.util.spec_from_file_location
 
-            def pinned_spec(name, path, *args, **kwargs):
+            def racing_spec(name, path, *args, **kwargs):
                 spec = real_spec_from_file(name, path, *args, **kwargs)
-                spec.loader = _PinNextNumberLoader(spec.loader, dup_number)
+                spec.loader = _LedgerRaceLoader(spec.loader, raced_number)
                 return spec
 
             runner = CliRunner()
             with patch.object(
-                importlib.util, "spec_from_file_location", side_effect=pinned_spec
+                importlib.util, "spec_from_file_location", side_effect=racing_spec
             ):
                 result = runner.invoke(
                     zd.cli,

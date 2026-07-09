@@ -37,7 +37,7 @@ from click.shell_completion import CompletionItem
 
 
 # ---------------------------------------------------------------------------
-# Backups — timestamped copies before any destructive write, keep last 5
+# Backups — timestamped copies before any destructive write, keep last 20
 # ---------------------------------------------------------------------------
 
 _MAX_BACKUPS = 20
@@ -45,7 +45,11 @@ _backed_up_this_run: set[str] = set()
 
 
 def _backup_file(path):
-    """Create a timestamped backup of path if it exists. Once per path per run."""
+    """Create a timestamped backup of path if it exists. Once per path per run.
+
+    Used for CSV/config backups (plain file copy). DB backups go through
+    _backup_db instead, which uses SQLite's online-backup API so a live
+    WAL-mode DB is never copied mid-write (see _backup_db)."""
     path = Path(path)
     key = str(path)
     if key in _backed_up_this_run or not path.exists():
@@ -57,6 +61,39 @@ def _backup_file(path):
     # Prune old backups, keep last _MAX_BACKUPS
     pattern = f"{path.name}.*.bak"
     backups = sorted(path.parent.glob(pattern))
+    for old in backups[:-_MAX_BACKUPS]:
+        old.unlink(missing_ok=True)
+
+
+def _backup_db(conn, db_path):
+    """Snapshot an OPEN sqlite3 connection to a timestamped .bak file via the
+    SQLite online-backup API, so a live WAL-mode DB is never copied mid-write
+    (shutil.copy2 can grab a torn snapshot when committed frames sit in the
+    -wal sidecar). Once per path per run, pruned to _MAX_BACKUPS like
+    _backup_file. No-op if the source DB has no user tables yet (a fresh/
+    empty DB has nothing worth snapshotting).
+    """
+    db_path = Path(db_path)
+    key = str(db_path)
+    if key in _backed_up_this_run or not db_path.exists():
+        return
+    table_count = conn.execute(
+        "SELECT count(*) FROM sqlite_master WHERE type='table'"
+    ).fetchone()[0]
+    if not table_count:
+        return
+    _backed_up_this_run.add(key)
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    backup_path = db_path.with_suffix(f"{db_path.suffix}.{ts}.bak")
+    dest = sqlite3.connect(backup_path)
+    try:
+        with dest:
+            conn.backup(dest)
+    finally:
+        dest.close()
+    # Prune old backups, keep last _MAX_BACKUPS
+    pattern = f"{db_path.name}.*.bak"
+    backups = sorted(db_path.parent.glob(pattern))
     for old in backups[:-_MAX_BACKUPS]:
         old.unlink(missing_ok=True)
 
@@ -138,26 +175,39 @@ def _migrate(conn):
         if not _column_exists(conn, table, column)
     ]
     if missing:
-        # Back up before touching schema. _backup_file is a no-op if the file
-        # doesn't exist yet (fresh in-memory create) or was already backed up.
-        _backup_file(ZD_DB)
+        # Back up before touching schema, via the online-backup API (conn is
+        # already open) so a live WAL-mode DB is never copied mid-write.
+        # _backup_db is a no-op if the file doesn't exist yet (fresh
+        # in-memory create), has no tables yet, or was already backed up.
+        _backup_db(conn, ZD_DB)
         for _table, alter in missing:
             conn.execute(alter)
 
     conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
 
 
-def get_conn():
-    _backup_file(ZD_DB)
+def get_conn(readonly=False):
+    """Open a connection to ZD_DB, set standard PRAGMAs, and (unless
+    readonly) snapshot the pre-write state via the online-backup API.
+
+    The connection is opened FIRST because the online-backup API needs an
+    open source connection; the backup still captures the DB's state before
+    the caller's own writes land, since it runs before this function returns.
+    readonly=True skips the backup entirely (H.3) — read-only commands and
+    tab-completion have nothing to protect against and were otherwise
+    hollowing out the _MAX_BACKUPS retention window on every invocation.
+    """
     conn = sqlite3.connect(ZD_DB)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    if not readonly:
+        _backup_db(conn, ZD_DB)
     return conn
 
 
 def init_db():
-    with get_conn() as conn:
+    with get_conn(readonly=True) as conn:
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS clients (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -224,7 +274,7 @@ def to_money(v):
 
 def _complete_client(ctx, param, incomplete):
     try:
-        conn = get_conn()
+        conn = get_conn(readonly=True)
         rows = conn.execute(
             "SELECT slug FROM clients WHERE slug LIKE ?", (incomplete + "%",)
         ).fetchall()
@@ -313,6 +363,17 @@ def week_label(iso_date_str):
     # Find Monday of that week
     monday = d - timedelta(days=d.weekday())
     return f"Week of {monday.strftime('%b %-d')}"
+
+
+def week_key(iso_date_str):
+    """Return the ISO date (year-inclusive) of the Monday of iso_date_str's week.
+
+    Used as the GROUPING key in group_sessions_by_week so two sessions whose
+    weeks share a month/day Monday but fall in different years never collapse
+    into the same line item (week_label's displayed string has no year)."""
+    d = date.fromisoformat(iso_date_str)
+    monday = d - timedelta(days=d.weekday())
+    return monday.isoformat()
 
 
 def _clean_week_summary(text):
@@ -542,18 +603,31 @@ def summarize_week_with_local_gemma(
 def group_sessions_by_week(sessions, summary_provider=None):
     """
     Group a list of session rows by calendar week.
-    Returns list of dicts: {label, hours, rate, amount, sessions}
+
+    Grouped by the Monday's full ISO date (week_key), which is year-inclusive,
+    so two sessions whose weeks share a month/day Monday but fall in
+    different years are never merged into one line item (a silent billing
+    merge across years). The human-facing `label`/description still uses
+    week_label's "Week of Mon DD" format (no year) — only the grouping KEY
+    changed. Returns list of dicts: {description, hours, rate, amount},
+    sorted chronologically by the Monday ISO key.
     """
     weeks = {}
     for s in sessions:
-        label = week_label(s["work_date"])
-        if label not in weeks:
-            weeks[label] = {"label": label, "sessions": [], "hours": 0.0, "rate": s["rate"]}
-        weeks[label]["sessions"].append(s)
-        weeks[label]["hours"] += s["hours"]
+        key = week_key(s["work_date"])
+        if key not in weeks:
+            weeks[key] = {
+                "label": week_label(s["work_date"]),
+                "sessions": [],
+                "hours": 0.0,
+                "rate": s["rate"],
+            }
+        weeks[key]["sessions"].append(s)
+        weeks[key]["hours"] += s["hours"]
 
     result = []
-    for label, data in weeks.items():
+    for key in sorted(weeks.keys()):
+        data = weeks[key]
         rate = data["rate"]
         # Use the raw accumulated hours — to_money already quantizes the
         # amount to cents (Decimal/ROUND_HALF_UP). A pre-round of hours here
@@ -566,7 +640,7 @@ def group_sessions_by_week(sessions, summary_provider=None):
                 summary = summary_provider(data["label"], data["sessions"])
                 if summary:
                     description = f"{data['label']} - {_clean_week_summary(summary)}"
-            except WeekSummaryError as exc:
+            except (WeekSummaryError, SummaryServerError) as exc:
                 click.echo(f"  ⚠  Weekly summary unavailable for {data['label']}: {exc}")
         result.append({
             "description": description,
@@ -650,7 +724,7 @@ def cli(ctx):
 @cli.command("clients")
 def cmd_clients():
     """List all clients and their rates."""
-    with get_conn() as conn:
+    with get_conn(readonly=True) as conn:
         rows = conn.execute("SELECT slug, name, rate FROM clients ORDER BY name").fetchall()
     if not rows:
         click.echo("No clients found. Run `zd backfill` to seed initial clients.")
@@ -755,7 +829,7 @@ def cmd_status():
     Example:
       zd status
     """
-    with get_conn() as conn:
+    with get_conn(readonly=True) as conn:
         clients = conn.execute("SELECT * FROM clients ORDER BY name").fetchall()
 
         click.echo()
@@ -856,7 +930,7 @@ def cmd_sessions(client, show_all):
       zd sessions acme               # one client, unbilled
       zd sessions acme --all         # one client, all sessions
     """
-    with get_conn() as conn:
+    with get_conn(readonly=True) as conn:
         if client:
             clients = [get_client(conn, client)]
         else:
@@ -1267,8 +1341,16 @@ def cmd_invoice(client, invoice_date, invoice_month, summarize_weeks, flat_amoun
             else:
                 summary_func = _summary_func if effective_summarize_weeks else None
                 if effective_summarize_weeks:
-                    with _summary_server_context(summary_settings):
-                        line_items = group_sessions_by_week(sessions, summary_provider=summary_func)
+                    try:
+                        with _summary_server_context(summary_settings):
+                            line_items = group_sessions_by_week(sessions, summary_provider=summary_func)
+                    except (SummaryServerError, OSError) as exc:
+                        # OSError covers the spawn path too: mkdir/open/Popen can
+                        # raise FileNotFoundError (llama-server gone) / PermissionError.
+                        click.echo(
+                            f"  ⚠  Summary server unavailable ({exc}); using plain week labels."
+                        )
+                        line_items = group_sessions_by_week(sessions, summary_provider=None)
                 else:
                     line_items = group_sessions_by_week(sessions, summary_provider=summary_func)
                 for e in expenses:
@@ -1418,6 +1500,14 @@ def cmd_invoice(client, invoice_date, invoice_month, summarize_weeks, flat_amoun
         # ---- New invoice ----
         if invoice_date is None:
             invoice_date = date.today().isoformat()
+        else:
+            # Validate up front (as cmd_log/cmd_expense do): the numbering step
+            # below parses this via date.fromisoformat, so a malformed --date
+            # must fail as a clean ClickException, never a raw ValueError.
+            try:
+                date.fromisoformat(invoice_date)
+            except ValueError:
+                raise click.ClickException("Date must be YYYY-MM-DD format.")
 
         session_query = """SELECT s.*, cl.rate FROM sessions s
                JOIN clients cl ON cl.id = s.client_id
@@ -1469,8 +1559,16 @@ def cmd_invoice(client, invoice_date, invoice_month, summarize_weeks, flat_amoun
             summary_func = _summary_func if effective_summarize_weeks else None
             if effective_summarize_weeks:
                 click.echo("  Summarizing weekly line items with local Gemma model...")
-                with _summary_server_context(summary_settings):
-                    line_items = group_sessions_by_week(sessions, summary_provider=summary_func)
+                try:
+                    with _summary_server_context(summary_settings):
+                        line_items = group_sessions_by_week(sessions, summary_provider=summary_func)
+                except (SummaryServerError, OSError) as exc:
+                    # OSError covers the spawn path too: mkdir/open/Popen can
+                    # raise FileNotFoundError (llama-server gone) / PermissionError.
+                    click.echo(
+                        f"  ⚠  Summary server unavailable ({exc}); using plain week labels."
+                    )
+                    line_items = group_sessions_by_week(sessions, summary_provider=None)
             else:
                 line_items = group_sessions_by_week(sessions, summary_provider=summary_func)
 
@@ -1483,26 +1581,49 @@ def cmd_invoice(client, invoice_date, invoice_month, summarize_weeks, flat_amoun
                     "amount": float(to_money(e["amount"])),
                 })
 
-        # Get next invoice number — take the max of CSV ledger and zd DB
-        # so they never collide even if one source is ahead of the other.
+        # Get next invoice number — derive the YEAR from the invoice's own
+        # date (not "today") so a backdated --date gets a number in ITS
+        # year, and compute the next suffix as an INTEGER maximum across
+        # both the CSV ledger and the zd DB (never a lexical/string max,
+        # which breaks once a year passes 9999 invoices).
         csv_file = str(inv_mod._ledger_path_from_config(config))
-        csv_next = inv_mod.get_next_invoice_number(csv_file)
+        year = date.fromisoformat(invoice_date).year
+        year_prefix = f"{year}-"
 
-        current_year = date.today().year
-        db_last = conn.execute(
-            "SELECT invoice_number FROM invoices WHERE invoice_number LIKE ? ORDER BY invoice_number DESC LIMIT 1",
-            (f"{current_year}-%",),
-        ).fetchone()
-        db_next_num = 1
-        if db_last:
+        max_suffix = 0
+        csv_path_for_numbering = Path(csv_file)
+        if csv_path_for_numbering.exists():
+            with inv_mod._file_lock(csv_path_for_numbering):
+                numbering_rows, numbering_headers = inv_mod._read_csv_with_headers(
+                    csv_path_for_numbering
+                )
+            numbering_inv_key = (
+                inv_mod._csv_field_key(numbering_headers, "invoice_number")
+                or "invoice_number"
+            )
+            for r in numbering_rows:
+                num_str = str(r.get(numbering_inv_key, ""))
+                if not num_str.startswith(year_prefix):
+                    continue
+                try:
+                    suffix = int(num_str.split("-", 1)[1])
+                except (ValueError, IndexError):
+                    continue
+                max_suffix = max(max_suffix, suffix)
+
+        db_rows = conn.execute(
+            "SELECT invoice_number FROM invoices WHERE invoice_number LIKE ?",
+            (f"{year_prefix}%",),
+        ).fetchall()
+        for row in db_rows:
+            num_str = row["invoice_number"] or ""
             try:
-                db_next_num = int(db_last["invoice_number"].split("-", 1)[1]) + 1
+                suffix = int(num_str.split("-", 1)[1])
             except (ValueError, IndexError):
-                pass
-        db_next = f"{current_year}-{db_next_num:04d}"
+                continue
+            max_suffix = max(max_suffix, suffix)
 
-        # Pick whichever is higher
-        invoice_number = max(csv_next, db_next)
+        invoice_number = f"{year}-{max_suffix + 1:04d}"
         click.echo(f"\n  Generating invoice {invoice_number} for {c['name']}")
         if invoice_month:
             click.echo(f"  Month: {invoice_month}")
