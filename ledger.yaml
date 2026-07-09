@@ -1,9 +1,51 @@
 # invoice ledger — minimal machine state. NO `freeze` field (computed on read).
 invariants:
-  INV-1: {gate_test_status: missing}    # covered | missing
-  INV-2: {gate_test_status: missing}
-  INV-3: {gate_test_status: missing}
-  INV-4: {gate_test_status: missing}
-  INV-5: {gate_test_status: missing}
-  INV-6: {gate_test_status: missing}
-resolutions: {}                          # INV-x: {resolved_at_date: "YYYY-MM-DD", note: "..."}
+  INV-1: {gate_test_status: covered}    # covered | missing
+  INV-2: {gate_test_status: covered}
+  INV-3: {gate_test_status: covered}
+  INV-4: {gate_test_status: covered}
+  INV-5: {gate_test_status: covered}
+  INV-6: {gate_test_status: covered}
+resolutions:                             # INV-x: {resolved_at_date: "YYYY-MM-DD", note: "..."}
+  INV-1:
+    resolved_at_date: "2026-07-09"
+    note: >-
+      Full-tree PII scanner (scripts/scan-pii.sh) and a pre-commit hook that
+      scans '++'-prefixed added lines; summary-server log created 0600 and a
+      warning when weekly summaries target a non-loopback endpoint. Gate:
+      tests/test_pii_hook.py (9).
+  INV-2:
+    resolved_at_date: "2026-07-09"
+    note: >-
+      DB-authoritative write ordering (SQLite COMMIT is the single point of no
+      return; CSV/PDF are projections) plus `zd reconcile [--fix]` and silent
+      auto-convergence that heal only the benign DB-ahead-of-CSV direction,
+      never CSV-ahead-of-DB. Gate: tests/test_invoice_transaction_integrity.py (11).
+  INV-3:
+    resolved_at_date: "2026-07-09"
+    note: >-
+      Regeneration preserves the originally-billed rate rather than recomputing
+      at the client's current rate; editing a billing-relevant field on an
+      already-billed session/expense is refused (notes/description stay free).
+      Gate: tests/test_invoice_immutability.py (9).
+  INV-4:
+    resolved_at_date: "2026-07-09"
+    note: >-
+      All money via Decimal/ROUND_HALF_UP; the flat-invoice total is pinned so
+      the approved number IS the persisted number; non-finite input rejected
+      before it can reach quantize. Gate: tests/test_money_totals.py (6).
+  INV-5:
+    resolved_at_date: "2026-07-09"
+    note: >-
+      Uniqueness check and PDF placement run before the ledger write; invoice
+      numbering computes the max suffix as an integer across CSV+DB (no
+      lexicographic degradation) and never overwrites an existing PDF or row.
+      Gate: tests/test_invoice_numbering.py (3).
+  INV-6:
+    resolved_at_date: "2026-07-09"
+    note: >-
+      Every config/DB/CSV write goes through atomic-replace + timestamped
+      backup, is lock-protected on shared files (zd and invoice.py share one
+      _file_lock by path hash), and fails closed — a corrupt-but-present config
+      is left untouched rather than clobbered with a stub. Gate:
+      tests/test_write_safety.py (10).
