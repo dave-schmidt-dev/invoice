@@ -354,17 +354,23 @@ rewriting history and a force-push, both of which need an explicit decision.
 
 ## Development
 
-Run tests:
+Run tests from the repository root:
 
 ```bash
-./venv/bin/python -m unittest discover -s tests -v
+./venv/bin/python -m unittest discover -v
 ```
 
 If the virtualenv is already active:
 
 ```bash
-python -m unittest discover -s tests -v
+python -m unittest discover -v
 ```
+
+Run the suite from the repo root (bare `discover`, not `discover -s tests`) so
+`tests/__init__.py` runs and redirects the CLIs' log files into a throwaway
+temp directory instead of the real `/tmp/zd.log` and `/tmp/invoice.log`. To get
+the same isolation under any other runner, set the `ZD_LOG_FILE` and
+`INVOICE_LOG_FILE` environment variables explicitly.
 
 ## License
 

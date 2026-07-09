@@ -1,7 +1,9 @@
 import csv
 import json
+import logging
 import tempfile
 import unittest
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from unittest.mock import patch
 
@@ -248,6 +250,114 @@ class InvoiceCliTests(unittest.TestCase):
             self.assertEqual(loaded["clients"][0]["name"], "Acme Corp")
             # Written with owner-only permissions (0600), unchanged by the lock wrap.
             self.assertEqual(config_path.stat().st_mode & 0o777, 0o600)
+
+
+class InvoiceLoggingTests(unittest.TestCase):
+    """Tests for D.3: file logging + --debug flag (INV-1: no PII in logs)."""
+
+    def tearDown(self):
+        # The "invoice" logger is a module-level named singleton, so a
+        # handler left over from one test (often pointed at a tmpdir that is
+        # about to be deleted) would silently break unrelated tests. Always
+        # strip every handler we may have added.
+        logger = logging.getLogger("invoice")
+        for handler in logger.handlers[:]:
+            handler.close()
+            logger.removeHandler(handler)
+
+    def test_debug_flag_sets_invoice_logger_to_debug_level(self):
+        runner = CliRunner()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = Path(tmpdir) / "invoice-debug.log"
+            with patch.object(invoice, "LOG_FILE", str(log_path)), patch.object(
+                invoice, "load_config", return_value={"storage": {"ledger_file": "/tmp/invoices.csv"}}
+            ), patch.object(invoice, "_open_path", return_value=Path("/tmp/invoices.csv")):
+                result = runner.invoke(invoice.cli, ["--debug", "--ledger"])
+
+            self.assertEqual(result.exit_code, 0, msg=result.output)
+            self.assertEqual(logging.getLogger("invoice").level, logging.DEBUG)
+
+    def test_without_debug_flag_invoice_logger_is_warning_level(self):
+        runner = CliRunner()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = Path(tmpdir) / "invoice-warning.log"
+            with patch.object(invoice, "LOG_FILE", str(log_path)), patch.object(
+                invoice, "load_config", return_value={"storage": {"ledger_file": "/tmp/invoices.csv"}}
+            ), patch.object(invoice, "_open_path", return_value=Path("/tmp/invoices.csv")):
+                result = runner.invoke(invoice.cli, ["--ledger"])
+
+            self.assertEqual(result.exit_code, 0, msg=result.output)
+            self.assertEqual(logging.getLogger("invoice").level, logging.WARNING)
+
+    def test_rotating_file_handler_configured_with_expected_limits(self):
+        runner = CliRunner()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = Path(tmpdir) / "invoice-rotate.log"
+            with patch.object(invoice, "LOG_FILE", str(log_path)), patch.object(
+                invoice, "load_config", return_value={"storage": {"ledger_file": "/tmp/invoices.csv"}}
+            ), patch.object(invoice, "_open_path", return_value=Path("/tmp/invoices.csv")):
+                result = runner.invoke(invoice.cli, ["--debug", "--ledger"])
+
+            self.assertEqual(result.exit_code, 0, msg=result.output)
+            handlers = [
+                h for h in logging.getLogger("invoice").handlers
+                if isinstance(h, RotatingFileHandler)
+            ]
+            self.assertEqual(len(handlers), 1)
+            self.assertEqual(handlers[0].maxBytes, 1024 * 1024)
+            self.assertEqual(handlers[0].backupCount, 2)
+
+    def test_repeated_invocations_do_not_stack_duplicate_handlers(self):
+        runner = CliRunner()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = Path(tmpdir) / "invoice-idempotent.log"
+            with patch.object(invoice, "LOG_FILE", str(log_path)), patch.object(
+                invoice, "load_config", return_value={"storage": {"ledger_file": "/tmp/invoices.csv"}}
+            ), patch.object(invoice, "_open_path", return_value=Path("/tmp/invoices.csv")):
+                result1 = runner.invoke(invoice.cli, ["--debug", "--ledger"])
+                result2 = runner.invoke(invoice.cli, ["--debug", "--ledger"])
+
+            self.assertEqual(result1.exit_code, 0, msg=result1.output)
+            self.assertEqual(result2.exit_code, 0, msg=result2.output)
+            handlers = [
+                h for h in logging.getLogger("invoice").handlers
+                if isinstance(h, RotatingFileHandler)
+            ]
+            self.assertEqual(len(handlers), 1)
+
+    def test_debug_logging_never_leaks_client_name_inv1(self):
+        """INV-1 regression: a distinctive client/payer name must never
+        appear in the log file, even at DEBUG level."""
+        runner = CliRunner()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = Path(tmpdir) / "invoice-inv1.log"
+            config = {
+                "storage": {"ledger_file": "/tmp/invoices.csv"},
+                "clients": [{"name": "ZZTOPCLIENT"}],
+            }
+            with patch.object(invoice, "LOG_FILE", str(log_path)), patch.object(
+                invoice, "load_config", return_value=config
+            ), patch.object(invoice, "_open_path", return_value=Path("/tmp/invoices.csv")):
+                result = runner.invoke(invoice.cli, ["--debug", "--ledger"])
+
+            self.assertEqual(result.exit_code, 0, msg=result.output)
+            self.assertTrue(log_path.exists())
+            log_contents = log_path.read_text(encoding="utf-8")
+            self.assertNotIn("ZZTOPCLIENT", log_contents)
+
+    def test_log_file_perms_are_owner_only(self):
+        runner = CliRunner()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = Path(tmpdir) / "invoice-perms.log"
+            with patch.object(invoice, "LOG_FILE", str(log_path)), patch.object(
+                invoice, "load_config", return_value={"storage": {"ledger_file": "/tmp/invoices.csv"}}
+            ), patch.object(invoice, "_open_path", return_value=Path("/tmp/invoices.csv")):
+                result = runner.invoke(invoice.cli, ["--debug", "--ledger"])
+
+            self.assertEqual(result.exit_code, 0, msg=result.output)
+            self.assertTrue(log_path.exists())
+            mode = log_path.stat().st_mode & 0o777
+            self.assertEqual(mode, 0o600)
 
 
 if __name__ == "__main__":

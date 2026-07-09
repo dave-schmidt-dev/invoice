@@ -19,6 +19,7 @@ Usage:
 """
 
 import contextlib
+import logging
 import math
 import shutil
 import sqlite3
@@ -31,10 +32,49 @@ import urllib.parse
 import urllib.request
 from datetime import date, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 import click
 from click.shell_completion import CompletionItem
+
+LOG_FILE = os.environ.get("ZD_LOG_FILE", "/tmp/zd.log")
+
+
+def _setup_logging(debug: bool):
+    """Configure the named "zd" logger (never the root logger, so we don't
+    capture click/fpdf2/third-party log noise or spam stderr).
+
+    Idempotent: repeated calls (e.g. across CliRunner invocations in tests)
+    never stack duplicate handlers — only the level is refreshed on repeat
+    calls. Level is DEBUG when --debug is passed, WARNING otherwise, set on
+    both the logger and the handler.
+
+    INV-1 defense-in-depth: LOG_FILE lives in /tmp, a shared directory, so
+    the file is best-effort chmod'd to owner-only (0600) after the handler
+    creates it. Log CONTENT must stay PII-free regardless — see callers.
+    """
+    logger = logging.getLogger("zd")
+    logger.propagate = False
+    level = logging.DEBUG if debug else logging.WARNING
+    if not logger.handlers:
+        handler = RotatingFileHandler(
+            LOG_FILE, maxBytes=1024 * 1024, backupCount=2, encoding="utf-8"
+        )
+        handler.setFormatter(
+            logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
+        )
+        handler.setLevel(level)
+        logger.addHandler(handler)
+        try:
+            os.chmod(LOG_FILE, 0o600)
+        except OSError:
+            pass
+    else:
+        for handler in logger.handlers:
+            handler.setLevel(level)
+    logger.setLevel(level)
+    return logger
 
 
 # ---------------------------------------------------------------------------
@@ -349,6 +389,9 @@ def _sync_client_to_config(name):
             try:
                 config = json.loads(CONFIG_FILE.read_text(encoding="utf-8-sig"))
             except Exception as e:
+                logging.getLogger("zd").warning(
+                    "config file present but unparseable; refusing to overwrite"
+                )
                 raise click.ClickException(
                     f"Config file '{CONFIG_FILE}' is not valid JSON ({e}); left "
                     "untouched. Fix or restore it before adding a client."
@@ -720,8 +763,9 @@ SEED_CLIENTS = [
 # ---------------------------------------------------------------------------
 
 @click.group()
+@click.option("--debug", is_flag=True, help="Write DEBUG-level logs to <LOG_FILE> (default: WARNING+).")
 @click.pass_context
-def cli(ctx):
+def cli(ctx, debug):
     """zd — Zero Delta time tracker and invoice bridge.
 
     \b
@@ -765,6 +809,8 @@ def cli(ctx):
       zd paid <invoice_number>
       zd paid 2026-0003
     """
+    _setup_logging(debug)
+    logging.getLogger("zd").debug("cli invoked: %s", ctx.invoked_subcommand)
     if ctx.resilient_parsing or any(arg in ("--help", "-h") for arg in sys.argv[1:]):
         return
     init_db()
@@ -1773,6 +1819,7 @@ def cmd_invoice(client, invoice_date, invoice_month, summarize_weeks, flat_amoun
                     except (SummaryServerError, OSError) as exc:
                         # OSError covers the spawn path too: mkdir/open/Popen can
                         # raise FileNotFoundError (llama-server gone) / PermissionError.
+                        logging.getLogger("zd").warning("summary server unavailable: %s", exc)
                         click.echo(
                             f"  ⚠  Summary server unavailable ({exc}); using plain week labels."
                         )
@@ -1991,6 +2038,7 @@ def cmd_invoice(client, invoice_date, invoice_month, summarize_weeks, flat_amoun
                 except (SummaryServerError, OSError) as exc:
                     # OSError covers the spawn path too: mkdir/open/Popen can
                     # raise FileNotFoundError (llama-server gone) / PermissionError.
+                    logging.getLogger("zd").warning("summary server unavailable: %s", exc)
                     click.echo(
                         f"  ⚠  Summary server unavailable ({exc}); using plain week labels."
                     )

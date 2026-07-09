@@ -15,6 +15,7 @@ import copy
 import csv
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -26,10 +27,49 @@ import urllib.parse
 from contextlib import contextmanager
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 import click
 from fpdf import FPDF
+
+LOG_FILE = os.environ.get("INVOICE_LOG_FILE", "/tmp/invoice.log")
+
+
+def _setup_logging(debug: bool):
+    """Configure the named "invoice" logger (never the root logger, so we
+    don't capture click/fpdf2/third-party log noise or spam stderr).
+
+    Idempotent: repeated calls (e.g. across CliRunner invocations in tests)
+    never stack duplicate handlers — only the level is refreshed on repeat
+    calls. Level is DEBUG when --debug is passed, WARNING otherwise, set on
+    both the logger and the handler.
+
+    INV-1 defense-in-depth: LOG_FILE lives in /tmp, a shared directory, so
+    the file is best-effort chmod'd to owner-only (0600) after the handler
+    creates it. Log CONTENT must stay PII-free regardless — see callers.
+    """
+    logger = logging.getLogger("invoice")
+    logger.propagate = False
+    level = logging.DEBUG if debug else logging.WARNING
+    if not logger.handlers:
+        handler = RotatingFileHandler(
+            LOG_FILE, maxBytes=1024 * 1024, backupCount=2, encoding="utf-8"
+        )
+        handler.setFormatter(
+            logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
+        )
+        handler.setLevel(level)
+        logger.addHandler(handler)
+        try:
+            os.chmod(LOG_FILE, 0o600)
+        except OSError:
+            pass
+    else:
+        for handler in logger.handlers:
+            handler.setLevel(level)
+    logger.setLevel(level)
+    return logger
 
 # ---------------------------------------------------------------------------
 # Backups — timestamped copies before any destructive write, keep last 20
@@ -1140,9 +1180,12 @@ def save_to_csv(invoice_number, invoice_date, config, line_items, total, pdf_fil
 @click.group(invoke_without_command=True)
 @click.option("--ledger", "open_ledger", is_flag=True, help="Open the configured invoice ledger file.")
 @click.option("--invoice", "invoice_number", metavar="INVOICE_NUMBER", help="Open the PDF for a specific invoice number.")
+@click.option("--debug", is_flag=True, help="Write DEBUG-level logs to <LOG_FILE> (default: WARNING+).")
 @click.pass_context
-def cli(ctx, open_ledger, invoice_number):
+def cli(ctx, open_ledger, invoice_number, debug):
     """Invoice generator — create PDF invoices and track them in a CSV log."""
+    _setup_logging(debug)
+    logging.getLogger("invoice").debug("cli invoked: %s", ctx.invoked_subcommand)
     selected_shortcuts = int(open_ledger) + int(bool(invoice_number))
     if selected_shortcuts > 1:
         raise click.UsageError("Use either --ledger or --invoice, not both.")
@@ -1304,6 +1347,9 @@ def cmd_new(invoice_date):
         os.replace(temp_pdf_path, pdf_path)
     except BaseException:
         # Clean up the temp PDF on any failure before it is placed atomically.
+        logging.getLogger("invoice").warning(
+            "PDF write failed before atomic replace; temp file cleanup attempted"
+        )
         try:
             os.unlink(temp_pdf_path)
         except OSError:
