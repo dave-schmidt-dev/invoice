@@ -1745,17 +1745,32 @@ def cmd_invoice(client, invoice_date, invoice_month, summarize_weeks, flat_amoun
 
 @cli.command("paid")
 @click.argument("invoice_number")
-def cmd_paid(invoice_number):
+@click.option(
+    "--date", "paid_date_arg", default=None,
+    help="ISO date (YYYY-MM-DD) the invoice was paid. Defaults to today.",
+)
+def cmd_paid(invoice_number, paid_date_arg):
     """Mark an invoice as paid in zd DB and invoice.py's CSV ledger.
 
     \b
     Updates status to Paid in both the zd SQLite database and the
-    invoice.py CSV ledger so both stay in sync.
+    invoice.py CSV ledger so both stay in sync, and records the paid
+    date (defaults to today) in the zd database.
 
     \b
     Example:
-      zd paid 2026-0003
+      zd paid 2026-0003 --date 2026-05-01
     """
+    if paid_date_arg is None:
+        paid_date = date.today().isoformat()
+    else:
+        try:
+            paid_date = date.fromisoformat(paid_date_arg).isoformat()
+        except ValueError:
+            raise click.ClickException(
+                f"Invalid --date value {paid_date_arg!r}; expected YYYY-MM-DD."
+            )
+
     with get_conn() as conn:
         row = conn.execute(
             "SELECT * FROM invoices WHERE invoice_number = ?", (invoice_number,)
@@ -1766,7 +1781,8 @@ def cmd_paid(invoice_number):
             click.echo(f"  Invoice {invoice_number} is already marked Paid.")
             return
         conn.execute(
-            "UPDATE invoices SET status = 'Paid' WHERE invoice_number = ?", (invoice_number,)
+            "UPDATE invoices SET status = 'Paid', paid_date = ? WHERE invoice_number = ?",
+            (paid_date, invoice_number),
         )
 
     # Also update invoice.py's CSV ledger
@@ -1780,6 +1796,7 @@ def cmd_paid(invoice_number):
 
         csv_path = Path(csv_file)
         if csv_path.exists():
+            matched = False
             with inv_mod._file_lock(csv_path):
                 rows, file_headers = inv_mod._read_csv_with_headers(csv_path)
                 inv_key = inv_mod._csv_field_key(file_headers, "invoice_number") or "invoice_number"
@@ -1787,9 +1804,22 @@ def cmd_paid(invoice_number):
                 for r in rows:
                     if r.get(inv_key) == invoice_number:
                         r[status_key] = "Paid"
+                        matched = True
                         break
-                inv_mod._atomic_write_csv(csv_path, rows, file_headers)
-        click.echo(f"  ✓  Invoice {invoice_number} marked Paid in zd DB and CSV ledger.")
+                if matched:
+                    _backup_file(csv_path)
+                    inv_mod._atomic_write_csv(csv_path, rows, file_headers)
+            if matched:
+                click.echo(f"  ✓  Invoice {invoice_number} marked Paid in zd DB and CSV ledger.")
+            else:
+                click.echo(f"  ✓  Invoice {invoice_number} marked Paid in zd DB.")
+                click.echo(
+                    f"  ⚠  No matching row for {invoice_number} found in the CSV "
+                    "ledger; it was not updated."
+                )
+        else:
+            click.echo(f"  ✓  Invoice {invoice_number} marked Paid in zd DB.")
+            click.echo(f"  ⚠  CSV ledger not found at {csv_path}; it was not updated.")
     except Exception as e:
         click.echo(f"  ✓  Invoice {invoice_number} marked Paid in zd DB.")
         click.echo(f"  ⚠  Could not update CSV ledger: {e}")
