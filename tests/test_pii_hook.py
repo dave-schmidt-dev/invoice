@@ -31,6 +31,7 @@ def _find_project_root(start: Path) -> Path:
 
 PROJECT_ROOT = _find_project_root(Path(__file__).parent)
 REAL_HOOK = PROJECT_ROOT / "hooks" / "pre-commit"
+REAL_SCANNER = PROJECT_ROOT / "scripts" / "scan-pii.sh"
 
 
 def _git_available() -> bool:
@@ -243,6 +244,58 @@ class TestDoublePlusPrefixEdgeCase(PiiHookTestCase):
             "'++'-prefixed content containing a planted pattern must be "
             f"BLOCKED. Hook stderr: {result.stderr}",
         )
+
+
+class TestScanPiiFullTreeCatchesTrackedMatch(unittest.TestCase):
+    """Case 9: scripts/scan-pii.sh (full-tree audit) over a fixture repo.
+
+    Unlike hooks/pre-commit (staged diff only), scan-pii.sh scans every
+    TRACKED file in the repo. This plants a synthetic token in a committed
+    file, then runs the real scanner script (not a reimplementation) with
+    cwd at the fixture repo and asserts it exits non-zero, reports the
+    match, and still prints the honesty header.
+    """
+
+    def setUp(self):
+        if not _git_available():
+            self.skipTest("git is not available on PATH")
+        if not REAL_SCANNER.is_file():
+            self.skipTest(f"real scanner not found at {REAL_SCANNER}")
+
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.repo = Path(self._tmpdir.name)
+
+        self._run(["git", "init", "-q"])
+        self._run(["git", "config", "user.email", "pii-hook-test@example.invalid"])
+        self._run(["git", "config", "user.name", "PII Hook Test"])
+        self._run(["git", "config", "commit.gpgsign", "false"])
+
+        (self.repo / "hooks").mkdir(parents=True, exist_ok=True)
+
+    def tearDown(self):
+        self._tmpdir.cleanup()
+
+    def _run(self, args, **kwargs):
+        kwargs.setdefault("cwd", self.repo)
+        kwargs.setdefault("capture_output", True)
+        kwargs.setdefault("text", True)
+        return subprocess.run(args, **kwargs)
+
+    def test_scan_pii_blocks_on_tracked_file_match(self):
+        (self.repo / "hooks" / "pii-patterns.txt").write_text("zzsecrettoken\n")
+        (self.repo / "leaked.txt").write_text(
+            "some benign line\nleaked zzsecrettoken here\n"
+        )
+        self._run(["git", "add", "hooks/pii-patterns.txt", "leaked.txt"])
+        commit = self._run(["git", "commit", "-q", "-m", "commit planted token"])
+        self.assertEqual(commit.returncode, 0, commit.stderr)
+
+        result = self._run([str(REAL_SCANNER)])
+
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertIn("leaked.txt", result.stderr)
+        self.assertIn("zzsecrettoken", result.stderr.lower())
+        self.assertIn("HONESTY HEADER", result.stderr)
 
 
 if __name__ == "__main__":
