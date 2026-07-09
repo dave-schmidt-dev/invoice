@@ -227,6 +227,28 @@ class InvoiceCliTests(unittest.TestCase):
 
         self.assertIn(str(ledger_path), str(ctx.exception))
 
+    def test_save_config_round_trips_under_shared_lock(self):
+        """H.1: save_config now wraps its write in _file_lock (the same lock
+        zd.py's _sync_client_to_config takes on the same CONFIG_FILE path via
+        inv_mod._file_lock, so the two writers serialize instead of racing).
+        The lock is best-effort/cross-process only; this just confirms
+        save_config -> load_config still round-trips correctly with it in
+        place."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / ".invoice_config.json"
+            config = json.loads(json.dumps(invoice.DEFAULT_CONFIG))
+            config["payee"]["name"] = "Zero Delta LLC"
+            config["clients"][0]["name"] = "Acme Corp"
+
+            with patch.object(invoice, "CONFIG_FILE", config_path):
+                invoice.save_config(config)
+                loaded = invoice.load_config()
+
+            self.assertEqual(loaded["payee"]["name"], "Zero Delta LLC")
+            self.assertEqual(loaded["clients"][0]["name"], "Acme Corp")
+            # Written with owner-only permissions (0600), unchanged by the lock wrap.
+            self.assertEqual(config_path.stat().st_mode & 0o777, 0o600)
+
 
 if __name__ == "__main__":
     unittest.main()

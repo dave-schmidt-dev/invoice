@@ -456,9 +456,15 @@ def load_config():
 
 
 def save_config(config):
-    """Save config to ~/.invoice_config.json."""
-    _backup_file(CONFIG_FILE)
-    _atomic_write_json(CONFIG_FILE, config, mode=0o600)
+    """Save config to ~/.invoice_config.json.
+
+    Locked via `_file_lock` so this writer and zd.py's `_sync_client_to_config`
+    (which locks the same CONFIG_FILE path via `inv_mod._file_lock`) never
+    interleave a read-modify-write against each other.
+    """
+    with _file_lock(CONFIG_FILE):
+        _backup_file(CONFIG_FILE)
+        _atomic_write_json(CONFIG_FILE, config, mode=0o600)
 
 
 def _prompt_client_info(existing=None):

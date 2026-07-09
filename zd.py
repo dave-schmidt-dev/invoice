@@ -324,27 +324,52 @@ def _sync_client_to_config(name):
 
     Creates a minimal entry (name only) if missing so invoice PDF
     generation can find the client. Does nothing if already present.
+
+    FAIL-CLOSED (INV-6): CONFIG_FILE holds the payee, payment/banking, and
+    every client profile — not just the one this call cares about. If the
+    file EXISTS but doesn't parse as JSON, we must NOT treat that as "start
+    from empty", because writing back would silently wipe everything else in
+    the file down to just this one client. So a corrupt-but-present file
+    raises a clean ClickException and is left byte-for-byte untouched; only a
+    genuinely ABSENT file starts from {}.
+
+    Also locked and atomic, sharing invoice.py's `_file_lock`/
+    `_atomic_write_json` so this writer and invoice.py's `save_config` never
+    race each other on the same file (`_file_lock` derives its lock path from
+    a hash of the target path, so both callers land on the same lock).
     """
     import json
-    try:
-        config = json.loads(CONFIG_FILE.read_text(encoding="utf-8")) if CONFIG_FILE.exists() else {}
-    except Exception:
-        config = {}
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("invoice", INVOICE_PY)
+    inv_mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(inv_mod)
 
-    clients = config.setdefault("clients", [])
-    for c in clients:
-        if c.get("name", "").lower() == name.lower():
-            return  # already present
-    clients.append({
-        "name": name,
-        "contact": "",
-        "address": "",
-        "city": "",
-        "state": "",
-        "zip": "",
-    })
-    _backup_file(CONFIG_FILE)
-    CONFIG_FILE.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+    with inv_mod._file_lock(CONFIG_FILE):
+        if CONFIG_FILE.exists():
+            try:
+                config = json.loads(CONFIG_FILE.read_text(encoding="utf-8-sig"))
+            except Exception as e:
+                raise click.ClickException(
+                    f"Config file '{CONFIG_FILE}' is not valid JSON ({e}); left "
+                    "untouched. Fix or restore it before adding a client."
+                )
+        else:
+            config = {}
+
+        clients = config.setdefault("clients", [])
+        for c in clients:
+            if c.get("name", "").lower() == name.lower():
+                return  # already present
+        clients.append({
+            "name": name,
+            "contact": "",
+            "address": "",
+            "city": "",
+            "state": "",
+            "zip": "",
+        })
+        _backup_file(CONFIG_FILE)
+        inv_mod._atomic_write_json(CONFIG_FILE, config)
 
 
 def get_client(conn, slug):
@@ -448,6 +473,19 @@ def _parse_host_port(base_url, default_port=8086):
     return parsed.hostname or "127.0.0.1", str(parsed.port or default_port)
 
 
+def _is_loopback_host(host):
+    """True if `host` refers to the local machine (INV-1: client session
+    notes must not silently leave the machine for summarization).
+
+    Recognizes the common loopback spellings: "127.0.0.1" (and the rest of
+    the 127.0.0.0/8 block), "::1", and "localhost". Anything else (a LAN IP,
+    a hostname, a public address) is treated as non-loopback."""
+    host = (host or "").strip().lower()
+    if host in ("localhost", "::1"):
+        return True
+    return host.startswith("127.")
+
+
 def _spawn_summary_server(model_path, base_url, alias, log_path):
     """Spawn llama-server in the background with megalodon's locked argv
     pattern. Returns the Popen handle. Raises SummaryServerError if the
@@ -466,7 +504,17 @@ def _spawn_summary_server(model_path, base_url, alias, log_path):
         )
     host, port = _parse_host_port(base_url)
     Path(log_path).parent.mkdir(parents=True, exist_ok=True)
-    log_file = open(log_path, "ab", buffering=0)
+    # Owner-only (0600): this log captures llama-server's stdout/stderr, which
+    # can include client session notes sent for summarization (INV-1). Create
+    # via os.open so the mode applies at creation time (bypassing umask), then
+    # best-effort chmod in case the file already existed with looser perms
+    # from before this hardening (a chmod failure here must not crash spawn).
+    fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    log_file = os.fdopen(fd, "ab", buffering=0)
+    try:
+        os.chmod(log_path, 0o600)
+    except OSError:
+        pass
     return subprocess.Popen(
         [
             "llama-server",
@@ -1600,6 +1648,23 @@ def cmd_invoice(client, invoice_date, invoice_month, summarize_weeks, flat_amoun
     config = inv_mod.load_config()
     summary_settings = _weekly_summary_config(config)
     effective_summarize_weeks = bool(summarize_weeks or summary_settings["enabled"])
+
+    # Single choke point for the non-loopback warning (INV-1): this fires at
+    # most once per `zd invoice` run, right where the run commits to actually
+    # using summaries — before branching into the regenerate/new-invoice
+    # paths (each of which has its own summarize call site further down).
+    # flat_mode never reaches either summarize call site (a flat invoice
+    # renders a single fixed line item), so exclude it here too — otherwise a
+    # config-enabled-but-unused summarizer would warn for a run that never
+    # talks to it.
+    if effective_summarize_weeks and not flat_mode:
+        host, _port = _parse_host_port(summary_settings["base_url"])
+        if not _is_loopback_host(host):
+            click.echo(
+                f"  ⚠  Weekly summaries are configured to use a non-local endpoint "
+                f"({summary_settings['base_url']}). Client session notes will be "
+                "sent off this machine to generate summaries."
+            )
 
     def _summary_func(label, week_sessions):
         return summarize_week_with_local_gemma(

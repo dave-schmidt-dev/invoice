@@ -1,3 +1,4 @@
+import contextlib
 import json
 import os
 import sys
@@ -663,6 +664,152 @@ class ZdInvoiceTests(unittest.TestCase):
 
         self.assertEqual(result.exit_code, 0, msg=result.output)
         self.assertIn("Summarizing weekly line items with local Gemma model", result.output)
+
+    # ------------------------------------------------------------------
+    # Task H.5 — 0600 summary-server log + non-loopback endpoint warning
+    # ------------------------------------------------------------------
+
+    def test_spawn_summary_server_creates_log_file_with_owner_only_perms(self):
+        """The summary-server log can carry client session notes (INV-1), so
+        it must be created 0600 regardless of the process umask. Drive the
+        real _spawn_summary_server with shutil.which/model-path/Popen
+        patched so no real llama-server is required."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = Path(tmpdir) / "logs" / "summary.log"
+            fake_proc = Mock()
+
+            old_umask = os.umask(0o022)
+            try:
+                with patch.object(zd.shutil, "which", return_value="/usr/local/bin/llama-server"), \
+                     patch.object(Path, "exists", return_value=True), \
+                     patch("subprocess.Popen", return_value=fake_proc):
+                    proc = zd._spawn_summary_server(
+                        model_path="/fake/model.gguf",
+                        base_url="http://127.0.0.1:8086",
+                        alias="summarizer",
+                        log_path=str(log_path),
+                    )
+            finally:
+                os.umask(old_umask)
+
+            self.assertIs(proc, fake_proc)
+            self.assertTrue(log_path.exists())
+            mode = log_path.stat().st_mode & 0o777
+            self.assertEqual(mode, 0o600, f"expected 0o600, got {oct(mode)}")
+
+    def test_spawn_summary_server_tightens_perms_on_preexisting_looser_log(self):
+        """os.open's mode only applies at CREATION time, so a log file that
+        already exists with looser permissions (e.g. from before this
+        hardening, or an odd umask) must still end up 0600 via the
+        best-effort os.chmod."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = Path(tmpdir) / "summary.log"
+            log_path.write_text("old content\n", encoding="utf-8")
+            os.chmod(log_path, 0o644)
+            fake_proc = Mock()
+
+            with patch.object(zd.shutil, "which", return_value="/usr/local/bin/llama-server"), \
+                 patch.object(Path, "exists", return_value=True), \
+                 patch("subprocess.Popen", return_value=fake_proc):
+                zd._spawn_summary_server(
+                    model_path="/fake/model.gguf",
+                    base_url="http://127.0.0.1:8086",
+                    alias="summarizer",
+                    log_path=str(log_path),
+                )
+
+            mode = log_path.stat().st_mode & 0o777
+            self.assertEqual(mode, 0o600, f"expected 0o600, got {oct(mode)}")
+
+    def test_is_loopback_host_recognizes_local_spellings(self):
+        self.assertTrue(zd._is_loopback_host("127.0.0.1"))
+        self.assertTrue(zd._is_loopback_host("127.5.5.5"))
+        self.assertTrue(zd._is_loopback_host("localhost"))
+        self.assertTrue(zd._is_loopback_host("LOCALHOST"))
+        self.assertTrue(zd._is_loopback_host("::1"))
+        self.assertFalse(zd._is_loopback_host("192.168.1.50"))
+        self.assertFalse(zd._is_loopback_host("example.com"))
+        self.assertFalse(zd._is_loopback_host(""))
+
+    def test_invoice_warns_when_summary_endpoint_is_non_loopback(self):
+        """Summaries enabled with a LAN base_url must warn exactly once that
+        client session notes will leave the machine. _summary_server_context
+        is patched to a no-op so no real server is contacted."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._seed_invoice_data(tmpdir)
+            config_path = Path(tmpdir) / ".invoice_config.json"
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            config["zd"]["weekly_summaries"]["enabled"] = True
+            config["zd"]["weekly_summaries"]["base_url"] = "http://192.168.1.50:8086"
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            runner = CliRunner()
+
+            @contextlib.contextmanager
+            def _noop_server_context(settings):
+                yield
+
+            with patch.object(zd, "_summary_server_context", _noop_server_context), \
+                 patch.object(
+                     zd, "summarize_week_with_local_gemma", return_value="Remote summary"
+                 ):
+                result = runner.invoke(
+                    zd.cli,
+                    ["invoice", "acme", "--month", "2026-04", "--date", "2026-04-30"],
+                    input="y\n",
+                )
+
+            self.assertEqual(result.exit_code, 0, msg=result.output)
+            self.assertIn("non-local endpoint", result.output)
+            self.assertIn("http://192.168.1.50:8086", result.output)
+            # Fires exactly once per run, not once per week (two weeks are in scope here).
+            self.assertEqual(result.output.count("non-local endpoint"), 1)
+
+    def test_invoice_does_not_warn_for_loopback_summary_endpoint(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._seed_invoice_data(tmpdir)
+            config_path = Path(tmpdir) / ".invoice_config.json"
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            config["zd"]["weekly_summaries"]["enabled"] = True
+            config["zd"]["weekly_summaries"]["base_url"] = "http://127.0.0.1:8086"
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            runner = CliRunner()
+
+            @contextlib.contextmanager
+            def _noop_server_context(settings):
+                yield
+
+            with patch.object(zd, "_summary_server_context", _noop_server_context), \
+                 patch.object(
+                     zd, "summarize_week_with_local_gemma", return_value="Local summary"
+                 ):
+                result = runner.invoke(
+                    zd.cli,
+                    ["invoice", "acme", "--month", "2026-04", "--date", "2026-04-30"],
+                    input="y\n",
+                )
+
+            self.assertEqual(result.exit_code, 0, msg=result.output)
+            self.assertNotIn("non-local endpoint", result.output)
+
+    def test_invoice_does_not_warn_when_summaries_disabled(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._seed_invoice_data(tmpdir)
+            config_path = Path(tmpdir) / ".invoice_config.json"
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            # Summaries disabled entirely, even though base_url is non-loopback.
+            config["zd"]["weekly_summaries"]["enabled"] = False
+            config["zd"]["weekly_summaries"]["base_url"] = "http://192.168.1.50:8086"
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            runner = CliRunner()
+
+            result = runner.invoke(
+                zd.cli,
+                ["invoice", "acme", "--month", "2026-04", "--date", "2026-04-30"],
+                input="y\n",
+            )
+
+            self.assertEqual(result.exit_code, 0, msg=result.output)
+            self.assertNotIn("non-local endpoint", result.output)
 
     def test_invoice_help_does_not_initialize_database_for_process_invocation(self):
         runner = CliRunner()
@@ -1392,6 +1539,105 @@ class ZdInvoiceTests(unittest.TestCase):
             self.assertEqual(result.exit_code, 0, msg=result.output)
             backups = list(csv_path.parent.glob(f"{csv_path.name}.*.bak"))
             self.assertTrue(backups, "expected a .bak backup of the CSV ledger before the patch")
+
+    # ------------------------------------------------------------------
+    # Task H.1 — _sync_client_to_config fail-closed + shared lock
+    # ------------------------------------------------------------------
+
+    def test_add_client_fails_closed_on_corrupt_config_and_leaves_it_untouched(self):
+        """A CORRUPT ~/.invoice_config.json (exists but doesn't parse) must
+        cause `zd add-client` to fail with a clean ClickException — never
+        silently overwrite the file with a near-empty {clients: [name]}
+        object (the original data-loss bug)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._seed_invoice_data(tmpdir)
+            config_path = Path(tmpdir) / ".invoice_config.json"
+            corrupt_bytes = b'{ not json'
+            config_path.write_bytes(corrupt_bytes)
+            runner = CliRunner()
+
+            result = runner.invoke(
+                zd.cli, ["add-client", "widget", "Widget Co", "150.00"]
+            )
+
+            self.assertNotEqual(result.exit_code, 0)
+            # A clean ClickException, not a leaked traceback.
+            self.assertNotIsInstance(result.exception, json.JSONDecodeError)
+            # The corrupt file must be left BYTE-FOR-BYTE unchanged.
+            self.assertEqual(config_path.read_bytes(), corrupt_bytes)
+
+    def test_add_client_persists_new_client_and_preserves_existing_config(self):
+        """A new client added to a VALID config round-trips, and the
+        pre-existing payee/payment/other-client data must survive (not be
+        wiped by the sync)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._seed_invoice_data(tmpdir)
+            config_path = Path(tmpdir) / ".invoice_config.json"
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            config["payee"]["name"] = "Zero Delta LLC"
+            config["payee"]["email"] = "billing@zerodelta.example"
+            config["payment"]["bank_name"] = "First National"
+            config["payment"]["routing"] = "111000025"
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+            runner = CliRunner()
+
+            result = runner.invoke(
+                zd.cli, ["add-client", "widget", "Widget Co", "150.00"]
+            )
+
+            self.assertEqual(result.exit_code, 0, msg=result.output)
+            updated = json.loads(config_path.read_text(encoding="utf-8"))
+            # New client persisted.
+            names = [c.get("name") for c in updated["clients"]]
+            self.assertIn("Widget Co", names)
+            # Pre-existing client(s) preserved.
+            self.assertIn("Acme Corp", names)
+            # Pre-existing payee/payment data preserved (not wiped).
+            self.assertEqual(updated["payee"]["name"], "Zero Delta LLC")
+            self.assertEqual(updated["payee"]["email"], "billing@zerodelta.example")
+            self.assertEqual(updated["payment"]["bank_name"], "First National")
+            self.assertEqual(updated["payment"]["routing"], "111000025")
+
+    def test_add_client_creates_config_when_genuinely_absent(self):
+        """A genuinely MISSING config file (not corrupt, just never created)
+        is the one case allowed to start from {}."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "zd.db"
+            config_path = Path(tmpdir) / ".invoice_config.json"
+            patchers = [
+                patch.object(zd, "ZD_DB", db_path),
+                patch.object(zd, "CONFIG_FILE", config_path),
+                patch.dict(os.environ, {"HOME": tmpdir}),
+            ]
+            for patcher in patchers:
+                patcher.start()
+                self.addCleanup(patcher.stop)
+            zd.init_db()
+            self.assertFalse(config_path.exists())
+            runner = CliRunner()
+
+            result = runner.invoke(
+                zd.cli, ["add-client", "widget", "Widget Co", "150.00"]
+            )
+
+            self.assertEqual(result.exit_code, 0, msg=result.output)
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertEqual([c["name"] for c in config["clients"]], ["Widget Co"])
+
+    def test_add_client_is_noop_when_already_present_case_insensitive(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._seed_invoice_data(tmpdir)
+            config_path = Path(tmpdir) / ".invoice_config.json"
+            before = config_path.read_text(encoding="utf-8")
+            runner = CliRunner()
+
+            result = runner.invoke(
+                zd.cli, ["add-client", "acme", "ACME CORP", "150.00"]
+            )
+
+            self.assertEqual(result.exit_code, 0, msg=result.output)
+            after = config_path.read_text(encoding="utf-8")
+            self.assertEqual(before, after)
 
 
 if __name__ == "__main__":
