@@ -1154,13 +1154,36 @@ def cmd_invoice(client, invoice_date, invoice_month, summarize_weeks, regenerate
             invoice_date = inv_row["invoice_date"]
             inv_id = inv_row["id"]
 
+            # INV-3: price the regenerated line items at the rate that was
+            # BILLED, not the client's current rate. billed_rate is snapshotted
+            # at billing time (A.3); COALESCE falls back to the live client rate
+            # only for legacy rows that predate the snapshot column.
             sessions = conn.execute(
-                """SELECT s.*, cl.rate FROM sessions s
+                """SELECT s.*, COALESCE(s.billed_rate, cl.rate) AS rate FROM sessions s
                    JOIN clients cl ON cl.id = s.client_id
                    WHERE s.invoice_id = ?
                    ORDER BY s.work_date""",
                 (inv_id,),
             ).fetchall()
+
+            # Never silently substitute the current rate: if any billed session
+            # predates the billed_rate snapshot (legacy NULL), warn prominently
+            # that its historical rate is unverified and the current client rate
+            # is standing in for it.
+            legacy_sessions = [s for s in sessions if s["billed_rate"] is None]
+            if legacy_sessions:
+                click.echo(
+                    f"\n  ⚠  WARNING: {len(legacy_sessions)} of {len(sessions)} billed "
+                    f"sessions on invoice {invoice_number} have no snapshotted "
+                    "billed_rate (billed before rate-locking).",
+                    err=True,
+                )
+                click.echo(
+                    f"     Their historical rate is UNVERIFIED; the current client "
+                    f"rate (${c['rate']:.2f}/hr) is being used for those rows. The "
+                    "regenerated total may not match what was originally billed.",
+                    err=True,
+                )
 
             expenses = conn.execute(
                 "SELECT * FROM expenses WHERE invoice_id = ?",
@@ -1181,47 +1204,112 @@ def cmd_invoice(client, invoice_date, invoice_month, summarize_weeks, regenerate
                     "amount": float(to_money(e["amount"])),
                 })
 
+            # Confirmation total derives from the SAME line_items handed to
+            # generate_pdf, quantized the way the new-invoice path does it, so
+            # confirmation == persisted (INV-4). For a FLAT invoice the total is
+            # immutable: reuse the stored total rather than recomputing from
+            # hours*rate (E.1 will create flat invoices; handle the mode now).
+            billing_mode = inv_row["billing_mode"] if "billing_mode" in inv_row.keys() else None
             total_hours = sum(s["hours"] for s in sessions)
-            total_labor = to_money(total_hours * c["rate"])
-            total_exp = to_money(sum(e["amount"] for e in expenses))
-            total = total_labor + total_exp
+            if billing_mode == "flat":
+                # Flat invoices bill a fixed amount, not hours*rate. The stored
+                # invoice total is authoritative; reproduce it exactly.
+                total = to_money(str(inv_row["total"]))
+            else:
+                total_labor = sum(
+                    (to_money(str(li["amount"])) for li in line_items
+                     if li.get("hours") or li.get("rate")),
+                    Decimal("0.00"),
+                )
+                total_exp = sum(
+                    (to_money(str(li["amount"])) for li in line_items
+                     if not li.get("hours") and not li.get("rate")),
+                    Decimal("0.00"),
+                )
+                total = to_money(sum(
+                    (to_money(str(li["amount"])) for li in line_items),
+                    Decimal("0.00"),
+                ))
 
             click.echo(f"\n  Regenerating invoice {invoice_number} for {c['name']}")
             click.echo(f"  {len(sessions)} sessions → {len(line_items)} weekly line items")
-            click.echo(f"  {total_hours:.1f} hours @ ${c['rate']:.2f}/hr = ${total_labor:,.2f}")
-            if total_exp:
-                click.echo(f"  Expenses: ${total_exp:,.2f}")
+            if billing_mode == "flat":
+                click.echo(f"  Flat invoice — reusing stored total ${total:,.2f}")
+            else:
+                click.echo(f"  {total_hours:.1f} hours = ${total_labor:,.2f}")
+                if total_exp:
+                    click.echo(f"  Expenses: ${total_exp:,.2f}")
             click.echo(f"  Total: ${total:,.2f}")
 
             if not click.confirm("\n  Proceed?"):
                 click.echo("  Cancelled.")
                 return
 
-            # Generate PDF
+            # ------------------------------------------------------------------
+            # Durable write ordering (INV-2 / INV-6, mirrors the new-invoice
+            # path). The customer-facing PDF is placed atomically BEFORE the
+            # ledgers are updated, and no delete can crash after the ledgers
+            # change:
+            #   1. Render to a TEMP PDF (never the final path).
+            #   2. os.replace -> final PDF (atomic).
+            #   3. UPDATE invoices + explicit conn.commit() (point of no return).
+            #   4. Patch the CSV ledger row atomically, backing it up first.
+            #   5. Delete the OLD PDF only if the path changed, guarded so a
+            #      delete failure can never crash after the ledgers are updated.
+            # ------------------------------------------------------------------
             invoices_dir = str(inv_mod._invoices_dir_from_config(config))
             Path(invoices_dir).mkdir(parents=True, exist_ok=True)
             client_slug = inv_mod._sanitize_filename_component(c["name"], "Client")
             safe_num = inv_mod._sanitize_filename_component(invoice_number, "invoice")
             pdf_filename = f"{client_slug}_Invoice_{safe_num}.pdf"
             pdf_path = str(Path(invoices_dir) / pdf_filename)
+            temp_pdf = f"{pdf_path}.tmp-{os.getpid()}"
 
-            actual_total = inv_mod.generate_pdf(
-                invoice_number, invoice_date, config, line_items, pdf_path,
-                client=matched_client, payment_terms="Net 30",
-            )
+            # Step 1 — render to the temp path.
+            committed = False
+            try:
+                actual_total = inv_mod.generate_pdf(
+                    invoice_number, invoice_date, config, line_items, temp_pdf,
+                    client=matched_client, payment_terms="Net 30",
+                )
 
-            # Update DB record
-            conn.execute(
-                "UPDATE invoices SET total = ?, pdf_path = ? WHERE id = ?",
-                (float(actual_total), pdf_path, inv_id),
-            )
+                # For a flat invoice the persisted total is immutable: keep the
+                # stored figure regardless of what generate_pdf computed from the
+                # (hours-priced) line items.
+                if billing_mode == "flat":
+                    actual_total = total
 
-            # Update CSV ledger row
+                # Step 2 — promote the temp PDF to its final path atomically
+                # BEFORE any ledger mutation.
+                os.replace(temp_pdf, pdf_path)
+
+                # Step 3 — explicit transaction for the DB ledger. Do not rely on
+                # the implicit block-exit commit; make the point of no return
+                # explicit and ordered after the PDF is in place.
+                conn.execute(
+                    "UPDATE invoices SET total = ?, pdf_path = ? WHERE id = ?",
+                    (float(actual_total), pdf_path, inv_id),
+                )
+                conn.commit()
+                committed = True
+            except BaseException:
+                # Failure BEFORE the commit: clean up the temp PDF (guarded) and
+                # re-raise. Nothing durable to the ledgers has changed yet.
+                if not committed:
+                    try:
+                        os.remove(temp_pdf)
+                    except OSError:
+                        pass
+                raise
+
+            # Step 4 — patch the CSV ledger row atomically. Back up the ledger
+            # first (INV-6) so the pre-edit state is recoverable.
             csv_file = str(inv_mod._ledger_path_from_config(config))
             csv_path = Path(csv_file)
             if csv_path.exists():
                 try:
                     with inv_mod._file_lock(csv_path):
+                        _backup_file(csv_path)
                         rows, file_headers = inv_mod._read_csv_with_headers(csv_path)
                         inv_key = inv_mod._csv_field_key(file_headers, "invoice_number") or "invoice_number"
                         total_key = inv_mod._csv_field_key(file_headers, "total") or "total"
@@ -1235,10 +1323,18 @@ def cmd_invoice(client, invoice_date, invoice_month, summarize_weeks, regenerate
                 except Exception as e:
                     click.echo(f"  ⚠  Could not update CSV ledger: {e}")
 
-            # Remove old PDF if path changed
+            # Step 5 — remove the OLD PDF only if the path changed. A delete
+            # failure here must NEVER crash: the ledgers are already updated, so
+            # warn and continue (a stale extra PDF is harmless).
             old_path = inv_row["pdf_path"]
             if old_path and old_path != pdf_path and Path(old_path).exists():
-                Path(old_path).unlink()
+                try:
+                    Path(old_path).unlink()
+                except OSError as e:
+                    click.echo(
+                        f"  ⚠  Could not remove the old PDF ({old_path}): {e}",
+                        err=True,
+                    )
 
             click.echo(f"\n  ✓  Invoice {invoice_number} regenerated: {pdf_path}")
             click.echo(f"  ✓  Total: ${actual_total:,.2f}")
