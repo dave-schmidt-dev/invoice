@@ -971,10 +971,14 @@ def save_to_csv(invoice_number, invoice_date, config, line_items, total, pdf_fil
         clients = config.get("clients", [])
         client = clients[0] if clients else {}
 
-    items_str = "; ".join(
-        f"{item['description']} ({item['hours']} hrs @ ${item['rate']:.2f}/hr)"
-        for item in line_items
-    )
+    def _format_line_item(item):
+        # A flat-rate line item (hours == 0 and rate == 0) carries its full
+        # detail in the description, so omit the "(0 hrs @ $0.00/hr)" suffix.
+        if item["hours"] == 0 and item["rate"] == 0:
+            return f"{item['description']}"
+        return f"{item['description']} ({item['hours']} hrs @ ${item['rate']:.2f}/hr)"
+
+    items_str = "; ".join(_format_line_item(item) for item in line_items)
 
     row_data = {
         "invoice_number": _validate_invoice_number(invoice_number),
@@ -989,23 +993,27 @@ def save_to_csv(invoice_number, invoice_date, config, line_items, total, pdf_fil
 
     _backup_file(csv_path)
     with _file_lock(csv_path):
-        existing_numbers = set()
+        existing_rows = []
         file_headers = None
         if csv_path.exists():
-            rows, file_headers = _read_csv_with_headers(csv_path)
+            existing_rows, file_headers = _read_csv_with_headers(csv_path)
             inv_key = _csv_field_key(file_headers, "invoice_number") or "invoice_number"
-            existing_numbers = {str(row.get(inv_key, "")) for row in rows}
+            existing_numbers = {str(row.get(inv_key, "")) for row in existing_rows}
+        else:
+            existing_numbers = set()
 
+        # Duplicate-invoice-number guard kept as defense-in-depth.
         if row_data["invoice_number"] in existing_numbers:
             raise click.ClickException(
                 f"Invoice number '{row_data['invoice_number']}' already exists in {csv_path}. "
                 "Choose a different invoice number."
             )
 
-        # Use CSV_HEADERS for new files; append matching the file's existing headers
+        # Use CSV_HEADERS for new files; keep the file's existing headers for
+        # legacy ledgers whose columns differ from CSV_HEADERS.
         write_headers = file_headers if file_headers and set(file_headers) != set(CSV_HEADERS) else CSV_HEADERS
         if file_headers and set(file_headers) != set(CSV_HEADERS):
-            # Map row_data keys to the file's actual header names
+            # Map row_data keys to the file's actual header names.
             mapped_row = {}
             for key, value in row_data.items():
                 actual_key = _csv_field_key(file_headers, key)
@@ -1013,21 +1021,11 @@ def save_to_csv(invoice_number, invoice_date, config, line_items, total, pdf_fil
                     mapped_row[actual_key] = value
             row_data = mapped_row
 
-        # Ensure file ends with a newline before appending
-        if csv_path.exists() and csv_path.stat().st_size > 0:
-            with open(csv_path, "rb") as check:
-                check.seek(-1, 2)
-                if check.read(1) not in (b"\n", b"\r"):
-                    with open(csv_path, "a", encoding="utf-8") as fix:
-                        fix.write("\n")
-
-        with open(csv_path, "a", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=write_headers)
-            if f.tell() == 0:
-                writer.writeheader()
-            writer.writerow(row_data)
-            f.flush()
-            os.fsync(f.fileno())
+        # Read existing rows, append the new row in memory, then rewrite the
+        # whole file via an atomic os.replace so a crash mid-write can never
+        # leave a torn/partial row in the ledger (INV-6).
+        all_rows = existing_rows + [row_data]
+        _atomic_write_csv(csv_path, all_rows, write_headers)
     return csv_file
 
 
