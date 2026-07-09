@@ -113,6 +113,120 @@ class InvoiceCliTests(unittest.TestCase):
         self.assertNotEqual(result.exit_code, 0)
         self.assertIn("Use either --ledger or --invoice, not both.", result.output)
 
+    # ------------------------------------------------------------------
+    # Crash-hardening regressions (C1-C6)
+    # ------------------------------------------------------------------
+
+    def test_cmd_status_backfills_missing_status_column_on_legacy_ledger(self):
+        # C1: a legacy ledger with no 'status' column used to blow up inside
+        # _atomic_write_csv with "dict contains fields not in fieldnames".
+        runner = CliRunner()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ledger_path = Path(tmpdir) / "invoices.csv"
+            legacy_headers = [
+                "invoice_number", "date", "payee_name", "payer_name",
+                "line_items", "total", "pdf_file",
+            ]
+            with open(ledger_path, "w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=legacy_headers)
+                writer.writeheader()
+                writer.writerow(
+                    {
+                        "invoice_number": "2026-0001",
+                        "date": "2026-03-14",
+                        "payee_name": "Zero Delta LLC",
+                        "payer_name": "Acme Corp",
+                        "line_items": "Consulting (2 hrs @ $100.00/hr)",
+                        "total": "200.00",
+                        "pdf_file": str(Path(tmpdir) / "invoice.pdf"),
+                    }
+                )
+
+            config = {"storage": {"ledger_file": str(ledger_path), "invoices_dir": tmpdir}}
+            with patch.object(invoice, "load_config", return_value=config):
+                result = runner.invoke(invoice.cli, ["status", "2026-0001", "Paid"])
+
+            self.assertEqual(result.exit_code, 0, msg=result.output)
+            self.assertIsNone(result.exception)
+            self.assertIn("status updated to: Paid", result.output)
+
+            with open(ledger_path, newline="", encoding="utf-8") as f:
+                rows = list(csv.DictReader(f))
+            self.assertEqual(rows[0]["status"], "Paid")
+
+    def test_multi_cell_height_whitespace_only_description_is_noop(self):
+        # C2: a whitespace-only description made text.split() empty, which
+        # used to leave `current = words[0]` raising IndexError.
+        pdf = invoice._InvoicePDF()
+        pdf.add_page()
+        pdf.set_font("Helvetica", "", 10)
+
+        height = invoice._multi_cell_height(pdf, "   ", 90, line_h=5)
+
+        self.assertEqual(height, 5)
+
+    def test_run_config_setup_handles_missing_payee_section(self):
+        # C3: a config missing the 'payee' section entirely used to raise
+        # KeyError on config["payee"] during the wizard.
+        config_without_payee = {
+            "invoice_header": {"title": "INVOICE", "logo_path": ""},
+            "clients": [dict(invoice._DEFAULT_CLIENT)],
+            "payment": {"bank_name": "", "routing": "", "account": "", "description": ""},
+            "storage": {
+                "ledger_file": str(invoice._DEFAULT_LEDGER),
+                "invoices_dir": str(invoice._DEFAULT_INVOICES_DIR),
+            },
+        }
+
+        # Answer every prompt with the default so the wizard completes.
+        with patch.object(invoice, "save_config"), patch("click.prompt", side_effect=lambda *a, **k: k.get("default", "")):
+            with patch("click.confirm", return_value=False):
+                result_config = invoice._run_config_setup(config_without_payee)
+
+        self.assertIn("payee", result_config)
+        self.assertEqual(result_config["payee"]["name"], "")
+
+    def test_get_next_invoice_number_handles_none_invoice_cell(self):
+        # C4: a None invoice-number cell (e.g. a blank CSV row) used to raise
+        # TypeError inside "-" in invoice_str.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            csv_path = Path(tmpdir) / "invoices.csv"
+            with open(csv_path, "w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=invoice.CSV_HEADERS)
+                writer.writeheader()
+                writer.writerow({h: "" for h in invoice.CSV_HEADERS})
+                f.write(",,,,,,," + "\n")  # row with no invoice_number value at all
+
+            next_number = invoice.get_next_invoice_number(str(csv_path))
+
+        current_year = invoice.date.today().year
+        self.assertEqual(next_number, f"{current_year}-0001")
+
+    def test_load_config_rejects_non_dict_json(self):
+        # C5: valid JSON that isn't an object (e.g. a top-level list) used to
+        # crash later on dict-style indexing/access.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "invoice-config.json"
+            config_path.write_text(json.dumps([1, 2, 3]), encoding="utf-8")
+
+            with patch.object(invoice, "CONFIG_FILE", config_path):
+                with self.assertRaises(invoice.click.ClickException) as ctx:
+                    invoice.load_config()
+
+        self.assertIn("not a JSON object", str(ctx.exception))
+
+    def test_read_csv_with_headers_rejects_non_utf8_ledger(self):
+        # C6: a non-UTF-8 ledger file used to raise a raw UnicodeDecodeError.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ledger_path = Path(tmpdir) / "invoices.csv"
+            with open(ledger_path, "wb") as f:
+                f.write(b"invoice_number,date\n2026-0001,\xff\xfe invalid \n")
+
+            with self.assertRaises(invoice.click.ClickException) as ctx:
+                invoice._read_csv_with_headers(ledger_path)
+
+        self.assertIn(str(ledger_path), str(ctx.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

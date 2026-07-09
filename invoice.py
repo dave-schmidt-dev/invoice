@@ -247,10 +247,15 @@ def _atomic_write_json(path, data, mode=0o600):
 
 def _read_csv_with_headers(path):
     """Read a CSV file, returning (rows, fieldnames) using the file's actual headers."""
-    with open(path, newline="", encoding="utf-8-sig") as f:
-        reader = csv.DictReader(f)
-        fieldnames = reader.fieldnames or []
-        rows = list(reader)
+    try:
+        with open(path, newline="", encoding="utf-8-sig") as f:
+            reader = csv.DictReader(f)
+            fieldnames = reader.fieldnames or []
+            rows = list(reader)
+    except UnicodeDecodeError as exc:
+        raise click.ClickException(
+            f"Ledger file '{path}' is not valid UTF-8 text: {exc}"
+        ) from exc
     return rows, fieldnames
 
 
@@ -427,6 +432,9 @@ def load_config():
     except OSError as exc:
         raise click.ClickException(f"Could not read config file '{CONFIG_FILE}': {exc}") from exc
 
+    if not isinstance(cfg, dict):
+        raise click.ClickException(f"Config file '{CONFIG_FILE}' is not a JSON object")
+
     # Migrate old single 'payer' key to the new 'clients' list.
     if "payer" in cfg and "clients" not in cfg:
         cfg["clients"] = [cfg.pop("payer")]
@@ -477,6 +485,9 @@ def _run_config_setup(existing=None):
     if "payer" in config and "clients" not in config:
         config["clients"] = [config.pop("payer")]
     config.setdefault("clients", [copy.deepcopy(_DEFAULT_CLIENT)])
+    config.setdefault("payee", {})
+    for key in DEFAULT_CONFIG["payee"]:
+        config["payee"].setdefault(key, "")
     config.setdefault("payment", {})
     config["payment"].setdefault("description", "")
 
@@ -617,14 +628,14 @@ def get_next_invoice_number(csv_file):
         for row in rows:
             try:
                 # Extract number from YYYY-#### format
-                invoice_str = row.get(inv_key, "")
+                invoice_str = row.get(inv_key) or ""
                 if "-" in invoice_str:
                     year_part, num_part = invoice_str.split("-", 1)
                     if year_part == str(current_year):
                         num = int(num_part)
                         if num > last_num:
                             last_num = num
-            except (ValueError, KeyError):
+            except (ValueError, KeyError, TypeError):
                 pass
 
     return f"{current_year}-{last_num + 1:04d}"
@@ -726,6 +737,8 @@ def _multi_cell_height(pdf, text, cell_width, line_h=5):
         return line_h
     safe_w = cell_width - 1  # small safety margin for cell padding
     words = text.split()
+    if not words:
+        return line_h
     lines = 1
     current = words[0]
     for word in words[1:]:
@@ -1280,7 +1293,12 @@ def cmd_status(invoice_number, status):
     with _file_lock(csv_file):
         rows, file_headers = _read_csv_with_headers(csv_file)
         inv_key = _csv_field_key(file_headers, "invoice_number") or "invoice_number"
-        status_key = _csv_field_key(file_headers, "status") or "status"
+        status_key = _csv_field_key(file_headers, "status")
+        if status_key is None:
+            # Legacy ledger predates the status column — add it for every row
+            # so _atomic_write_csv (kept strict) doesn't choke on an unknown key.
+            status_key = "status"
+            file_headers = list(file_headers) + [status_key]
 
         # Find the invoice
         found = False
