@@ -630,6 +630,28 @@ def get_next_invoice_number(csv_file):
     return f"{current_year}-{last_num + 1:04d}"
 
 
+def _invoice_number_exists(csv_file, invoice_number):
+    """Return True if invoice_number is already recorded in the CSV ledger.
+
+    The CSV ledger is the authoritative store, so this is checked BEFORE any
+    PDF is rendered — a duplicate number must never overwrite an existing
+    invoice's PDF (INV-5). `save_to_csv` keeps its own dup guard as
+    defense-in-depth.
+    """
+    normalized_number = _validate_invoice_number(invoice_number)
+    csv_path = Path(csv_file)
+    if not csv_path.exists():
+        return False
+
+    with _file_lock(csv_path):
+        rows, file_headers = _read_csv_with_headers(csv_path)
+        inv_key = _csv_field_key(file_headers, "invoice_number") or "invoice_number"
+        for row in rows:
+            if str(row.get(inv_key) or "").strip() == normalized_number:
+                return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Line items
 # ---------------------------------------------------------------------------
@@ -1180,10 +1202,33 @@ def cmd_new(invoice_date):
     pdf_filename = f"{client_name}_Invoice_{safe_invoice_number}.pdf"
     pdf_path = str(Path(invoices_dir) / pdf_filename)
 
-    total = generate_pdf(
-        invoice_number, invoice_date, config_data, line_items, pdf_path,
-        client=client, payment_terms=payment_terms, payment_description=payment_description,
-    )
+    # The CSV ledger is authoritative. Validate uniqueness BEFORE rendering the
+    # PDF so a duplicate number can never overwrite an existing invoice's PDF
+    # (INV-5). Then render to a temp path and os.replace it into place, so a
+    # crash after the final PDF is written but before the ledger append leaves
+    # only an orphan PDF (no ledger row) — never a ledger row pointing at a
+    # missing PDF (CR-4). save_to_csv keeps its own dup-check as defense-in-depth.
+    if _invoice_number_exists(csv_file, invoice_number):
+        raise click.ClickException(
+            f"Invoice number '{invoice_number}' already exists in {csv_file}. "
+            "Choose a different invoice number."
+        )
+
+    temp_pdf_path = f"{pdf_path}.tmp-{os.getpid()}"
+    try:
+        total = generate_pdf(
+            invoice_number, invoice_date, config_data, line_items, temp_pdf_path,
+            client=client, payment_terms=payment_terms, payment_description=payment_description,
+        )
+        os.replace(temp_pdf_path, pdf_path)
+    except BaseException:
+        # Clean up the temp PDF on any failure before it is placed atomically.
+        try:
+            os.unlink(temp_pdf_path)
+        except OSError:
+            pass
+        raise
+
     csv_used = save_to_csv(
         invoice_number, invoice_date, config_data, line_items, total, pdf_path,
         client=client,
