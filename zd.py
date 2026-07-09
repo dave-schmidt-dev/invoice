@@ -29,7 +29,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import date, datetime, timedelta
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
 from pathlib import Path
 
 import click
@@ -1072,8 +1072,28 @@ def cmd_edit_expense(expense_id, expense_date, amount, description, force):
     is_flag=True,
     help="Use local Gemma to add one-line summaries to weekly line items.",
 )
+@click.option(
+    "--flat",
+    "flat_amount",
+    type=str,
+    default=None,
+    metavar="AMOUNT",
+    help=(
+        "Bill a single fixed AMOUNT (e.g. 500 or 1500.00) instead of "
+        "hours×rate. Requires --description. The invoice total is exactly "
+        "AMOUNT regardless of logged hours. Scoped unbilled SESSIONS are "
+        "marked billed; reimbursable EXPENSES are left UNBILLED for a normal "
+        "invoice (CR-9). Cannot be combined with --summarize-weeks."
+    ),
+)
+@click.option(
+    "--description",
+    "flat_description",
+    default=None,
+    help="Line-item description for a --flat invoice (required with --flat).",
+)
 @click.option("--regenerate", default=None, help="Regenerate PDF for an existing invoice number")
-def cmd_invoice(client, invoice_date, invoice_month, summarize_weeks, regenerate):
+def cmd_invoice(client, invoice_date, invoice_month, summarize_weeks, flat_amount, flat_description, regenerate):
     """Generate an invoice PDF for all unbilled sessions of a client.
 
     \b
@@ -1091,12 +1111,48 @@ def cmd_invoice(client, invoice_date, invoice_month, summarize_weeks, regenerate
       zd invoice acme --date 2026-03-31
       zd invoice acme --month 2026-04 --date 2026-04-30
       zd invoice acme --month 2026-04 --summarize-weeks
+      zd invoice acme --flat 1500 --description "Fixed-scope engagement"
       zd invoice acme --regenerate 2026-0002
     """
     month_start = None
     month_end = None
     if invoice_month is not None:
         month_start, month_end = _month_bounds(invoice_month)
+
+    # ---- Flat-fee invoice option validation (E.1) ----
+    # Validate flags up front, before any DB/PDF work, so a bad combination
+    # fails fast with a clear message and no side effects.
+    flat_mode = flat_amount is not None
+    flat_total = None
+    if flat_mode:
+        if summarize_weeks:
+            raise click.ClickException(
+                "--flat cannot be combined with --summarize-weeks "
+                "(a flat invoice has no weekly line items to summarize)."
+            )
+        if not flat_description or not flat_description.strip():
+            raise click.ClickException("--flat requires --description \"...\".")
+        # Money via Decimal; reject non-finite and non-positive amounts (INV-4).
+        try:
+            parsed = Decimal(str(flat_amount))
+        except (InvalidOperation, ValueError):
+            raise click.ClickException(
+                f"--flat amount must be a number, got '{flat_amount}'."
+            )
+        if not parsed.is_finite():
+            raise click.ClickException("--flat amount must be finite (not inf/nan).")
+        # A finite Decimal can still exceed the default 28-digit context and
+        # blow up quantize() with InvalidOperation (e.g. 1e999, or a fat-fingered
+        # 40-digit paste). Catch it here so it fails as a clean ClickException
+        # rather than a raw traceback — no real invoice is anywhere near this.
+        try:
+            flat_total = to_money(parsed)
+        except InvalidOperation:
+            raise click.ClickException(
+                f"--flat amount is too large to bill: '{flat_amount}'."
+            )
+        if flat_total <= 0:
+            raise click.ClickException("--flat amount must be greater than 0.")
 
     # --- Load invoice.py config and machinery ---
     try:
@@ -1190,26 +1246,44 @@ def cmd_invoice(client, invoice_date, invoice_month, summarize_weeks, regenerate
                 (inv_id,),
             ).fetchall()
 
-            summary_func = _summary_func if effective_summarize_weeks else None
-            if effective_summarize_weeks:
-                with _summary_server_context(summary_settings):
-                    line_items = group_sessions_by_week(sessions, summary_provider=summary_func)
-            else:
-                line_items = group_sessions_by_week(sessions, summary_provider=summary_func)
-            for e in expenses:
-                line_items.append({
-                    "description": f"Expense: {e['description']}",
+            billing_mode = inv_row["billing_mode"] if "billing_mode" in inv_row.keys() else None
+
+            if billing_mode == "flat":
+                # E.1: a flat invoice bills one fixed amount, not hours×rate.
+                # Rebuild it as a SINGLE line item summing to the stored total
+                # rather than the (hourly) weekly grouping, so the regenerated
+                # PDF shows one flat line — never hourly rows that don't add up
+                # to the flat total. The stored total remains authoritative
+                # (INV-3). NOTE: the original --description is not persisted (no
+                # DB column), so a generic "Flat fee" label stands in on
+                # regenerate; only the TOTAL is guaranteed preserved.
+                stored_total = to_money(str(inv_row["total"]))
+                line_items = [{
+                    "description": "Flat fee",
                     "hours": 0,
                     "rate": 0,
-                    "amount": float(to_money(e["amount"])),
-                })
+                    "amount": float(stored_total),
+                }]
+            else:
+                summary_func = _summary_func if effective_summarize_weeks else None
+                if effective_summarize_weeks:
+                    with _summary_server_context(summary_settings):
+                        line_items = group_sessions_by_week(sessions, summary_provider=summary_func)
+                else:
+                    line_items = group_sessions_by_week(sessions, summary_provider=summary_func)
+                for e in expenses:
+                    line_items.append({
+                        "description": f"Expense: {e['description']}",
+                        "hours": 0,
+                        "rate": 0,
+                        "amount": float(to_money(e["amount"])),
+                    })
 
             # Confirmation total derives from the SAME line_items handed to
             # generate_pdf, quantized the way the new-invoice path does it, so
             # confirmation == persisted (INV-4). For a FLAT invoice the total is
             # immutable: reuse the stored total rather than recomputing from
-            # hours*rate (E.1 will create flat invoices; handle the mode now).
-            billing_mode = inv_row["billing_mode"] if "billing_mode" in inv_row.keys() else None
+            # hours*rate.
             total_hours = sum(s["hours"] for s in sessions)
             if billing_mode == "flat":
                 # Flat invoices bill a fixed amount, not hours*rate. The stored
@@ -1360,33 +1434,54 @@ def cmd_invoice(client, invoice_date, invoice_month, summarize_weeks, regenerate
         expense_query += " ORDER BY expense_date"
 
         sessions = conn.execute(session_query, session_params).fetchall()
-        expenses = conn.execute(expense_query, expense_params).fetchall()
+        # Flat invoices do NOT consume expenses (CR-9): reimbursable expenses
+        # stay unbilled so they can go on a normal invoice. Only query them for
+        # the hourly path.
+        expenses = (
+            [] if flat_mode
+            else conn.execute(expense_query, expense_params).fetchall()
+        )
 
-        if not sessions and not expenses:
+        # A flat invoice is authoritative on its AMOUNT and may be issued even
+        # with no logged sessions in scope; only the hourly path requires
+        # something to bill.
+        if not flat_mode and not sessions and not expenses:
             scope = f" in {invoice_month}" if invoice_month else ""
             click.echo(f"  No unbilled sessions or expenses for {c['name']}{scope}.")
             return
 
-        # Build line items grouped by week. When summarization is enabled,
-        # ensure the local llama-server is up for the entire grouping pass
-        # — _summary_server_context spawns it cold if needed and tears it
-        # down when we exit, so no orphan server lingers.
-        summary_func = _summary_func if effective_summarize_weeks else None
-        if effective_summarize_weeks:
-            click.echo("  Summarizing weekly line items with local Gemma model...")
-            with _summary_server_context(summary_settings):
-                line_items = group_sessions_by_week(sessions, summary_provider=summary_func)
-        else:
-            line_items = group_sessions_by_week(sessions, summary_provider=summary_func)
-
-        # Add expense line items if any
-        for e in expenses:
-            line_items.append({
-                "description": f"Expense: {e['description']}",
+        if flat_mode:
+            # E.1: one fixed line item. hours/rate are 0 so save_to_csv omits
+            # the "(0 hrs @ $0.00/hr)" suffix (A.2) and the description renders
+            # cleanly. The invoice total is exactly the --flat amount regardless
+            # of logged hours.
+            line_items = [{
+                "description": flat_description,
                 "hours": 0,
                 "rate": 0,
-                "amount": float(to_money(e["amount"])),
-            })
+                "amount": float(flat_total),
+            }]
+        else:
+            # Build line items grouped by week. When summarization is enabled,
+            # ensure the local llama-server is up for the entire grouping pass
+            # — _summary_server_context spawns it cold if needed and tears it
+            # down when we exit, so no orphan server lingers.
+            summary_func = _summary_func if effective_summarize_weeks else None
+            if effective_summarize_weeks:
+                click.echo("  Summarizing weekly line items with local Gemma model...")
+                with _summary_server_context(summary_settings):
+                    line_items = group_sessions_by_week(sessions, summary_provider=summary_func)
+            else:
+                line_items = group_sessions_by_week(sessions, summary_provider=summary_func)
+
+            # Add expense line items if any
+            for e in expenses:
+                line_items.append({
+                    "description": f"Expense: {e['description']}",
+                    "hours": 0,
+                    "rate": 0,
+                    "amount": float(to_money(e["amount"])),
+                })
 
         # Get next invoice number — take the max of CSV ledger and zd DB
         # so they never collide even if one source is ahead of the other.
@@ -1411,7 +1506,6 @@ def cmd_invoice(client, invoice_date, invoice_month, summarize_weeks, regenerate
         click.echo(f"\n  Generating invoice {invoice_number} for {c['name']}")
         if invoice_month:
             click.echo(f"  Month: {invoice_month}")
-        click.echo(f"  {len(sessions)} sessions → {len(line_items)} weekly line items")
 
         # Confirm before generating.
         #
@@ -1427,25 +1521,37 @@ def cmd_invoice(client, invoice_date, invoice_month, summarize_weeks, regenerate
         # to_money(total_hours * rate) (sum-of-rounded != rounded-of-sum), so
         # the old aggregate labor figure could diverge from what was billed.
         total_hours = sum(s["hours"] for s in sessions)
-        # Labor = per-week line items (hours or rate set); expenses = the rest.
-        total_labor = sum(
-            (to_money(str(li["amount"])) for li in line_items
-             if li.get("hours") or li.get("rate")),
-            Decimal("0.00"),
-        )
-        total_exp = sum(
-            (to_money(str(li["amount"])) for li in line_items
-             if not li.get("hours") and not li.get("rate")),
-            Decimal("0.00"),
-        )
         total = to_money(sum(
             (to_money(str(li["amount"])) for li in line_items),
             Decimal("0.00"),
         ))
-        click.echo(f"  {total_hours:.1f} hours @ ${c['rate']:.2f}/hr = ${total_labor:,.2f}")
-        if total_exp:
-            click.echo(f"  Expenses: ${total_exp:,.2f}")
-        click.echo(f"  Total: ${total:,.2f}")
+
+        if flat_mode:
+            # Flat invoices get their OWN echo: a single fixed line, not the
+            # hourly labor/expense split (a 0-hours/0-rate item would otherwise
+            # fall into the expense display bucket). The total is exactly the
+            # --flat amount regardless of the logged hours below it.
+            click.echo(f"  Flat fee: {flat_description}")
+            click.echo(f"  {len(sessions)} sessions marked billed "
+                       f"({total_hours:.1f} logged hours, not priced)")
+            click.echo(f"  Total: ${total:,.2f}")
+        else:
+            click.echo(f"  {len(sessions)} sessions → {len(line_items)} weekly line items")
+            # Labor = per-week line items (hours or rate set); expenses = the rest.
+            total_labor = sum(
+                (to_money(str(li["amount"])) for li in line_items
+                 if li.get("hours") or li.get("rate")),
+                Decimal("0.00"),
+            )
+            total_exp = sum(
+                (to_money(str(li["amount"])) for li in line_items
+                 if not li.get("hours") and not li.get("rate")),
+                Decimal("0.00"),
+            )
+            click.echo(f"  {total_hours:.1f} hours @ ${c['rate']:.2f}/hr = ${total_labor:,.2f}")
+            if total_exp:
+                click.echo(f"  Expenses: ${total_exp:,.2f}")
+            click.echo(f"  Total: ${total:,.2f}")
 
         if not click.confirm("\n  Proceed?"):
             click.echo("  Cancelled.")
@@ -1512,18 +1618,28 @@ def cmd_invoice(client, invoice_date, invoice_month, summarize_weeks, regenerate
                 client=matched_client, payment_terms="Net 30",
             )
 
+            # For a flat invoice the persisted total is immutable and equals the
+            # --flat AMOUNT, regardless of what generate_pdf computed from the
+            # line items (INV-4). Pin it here.
+            if flat_mode:
+                actual_total = flat_total
+
+            billing_mode = "flat" if flat_mode else "hourly"
+
             # Step 3 — Explicit transaction. After this commit the DB is
             # authoritative: the invoice exists and its sessions/expenses are
             # billed. Snapshot the client's current rate into
             # sessions.billed_rate so the billed amount is immutable against
-            # later rate changes (INV-3).
+            # later rate changes (INV-3). For a flat invoice the rate snapshot
+            # is not used for pricing (the flat total is authoritative) but is
+            # still recorded for consistency.
             conn.execute("BEGIN")
             conn.execute(
                 """INSERT INTO invoices
                        (invoice_number, client_id, invoice_date, total, status, pdf_path, billing_mode)
                    VALUES (?,?,?,?,?,?,?)""",
                 (invoice_number, c["id"], invoice_date, float(actual_total),
-                 "Sent", pdf_path, "hourly"),
+                 "Sent", pdf_path, billing_mode),
             )
             inv_row = conn.execute(
                 "SELECT id FROM invoices WHERE invoice_number = ?", (invoice_number,)
@@ -1543,7 +1659,10 @@ def cmd_invoice(client, invoice_date, invoice_month, summarize_weeks, regenerate
                 update_expense_query += " AND expense_date >= ? AND expense_date < ?"
                 update_expense_params.extend([month_start, month_end])
             conn.execute(update_session_query, update_session_params)
-            conn.execute(update_expense_query, update_expense_params)
+            # CR-9: a flat invoice does NOT consume expenses — leave all
+            # reimbursable expenses unbilled so they can go on a normal invoice.
+            if not flat_mode:
+                conn.execute(update_expense_query, update_expense_params)
 
             conn.commit()
             committed = True
