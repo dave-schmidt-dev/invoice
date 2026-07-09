@@ -5,6 +5,10 @@
 # Runs in well under a second; safe to keep enabled for every commit.
 # To bypass intentionally, fix the staged content — do NOT use --no-verify
 # as a shortcut.
+#
+# Fail-closed by design: any error condition below (missing pattern file,
+# empty pattern list, unscannable binary content, grep failure) blocks the
+# commit rather than silently allowing it through.
 
 set -euo pipefail
 
@@ -12,36 +16,71 @@ repo_root="$(git rev-parse --show-toplevel)"
 patterns="$repo_root/hooks/pii-patterns.txt"
 
 if [[ ! -f "$patterns" ]]; then
-    echo "[pre-commit] WARNING: $patterns missing — skipping PII guard." >&2
-    exit 0
+    echo "[pre-commit] BLOCKED: pattern file missing: $patterns" >&2
+    echo "[pre-commit] Cannot verify staged content is free of PII without it." >&2
+    exit 1
 fi
 
-# The hook directory hosts the pattern file itself plus this script and
-# its docs — those legitimately contain the strings we are guarding
-# against. Exclude `hooks/` from scanning to avoid the obvious self-trip.
-staged_diff="$(git diff --cached --no-color -U0 -- ':(exclude)hooks/*')"
+# The pattern file legitimately contains the guarded strings themselves, so
+# it alone is exempt from scanning. The hook script and any docs in hooks/
+# (e.g. README) are NOT exempt.
+staged_diff="$(git diff --cached --no-color -U0 -- ':(exclude)hooks/pii-patterns.txt')"
 if [[ -z "$staged_diff" ]]; then
     exit 0
 fi
 
-# Only inspect ADDED lines (start with '+', not '+++' file headers).
-added_lines="$(printf '%s\n' "$staged_diff" | grep -E '^\+[^+]' || true)"
+# Added binary files can't be line-scanned. Block them so a human reviews
+# manually rather than silently letting unscannable content through.
+if printf '%s\n' "$staged_diff" | grep -q '^Binary files .* differ$'; then
+    cat >&2 <<EOF
+
+[pre-commit] BLOCKED: staged diff includes a binary file that cannot be
+scanned for PII patterns.
+
+$(printf '%s\n' "$staged_diff" | grep '^Binary files .* differ$')
+
+Review the binary file manually for PII, then commit it with --no-verify
+only if you are certain it is clean. Prefer keeping binaries out of the
+repo (see README.md "No PII in the project").
+
+EOF
+    exit 1
+fi
+
+# Only inspect ADDED lines: everything starting with '+' except the '+++'
+# file header, with the single leading '+' stripped before scanning. This
+# ensures content that itself begins with '+' (e.g. an E.164 phone number
+# like +15551234567) is not accidentally dropped by a naive '^\+[^+]' filter.
+added_lines="$(printf '%s\n' "$staged_diff" | grep '^+' | grep -v '^+++' | cut -c2- || true)"
 if [[ -z "$added_lines" ]]; then
     exit 0
 fi
 
 # Strip blank lines and comments from the pattern file. Each remaining
-# line is treated as a case-insensitive grep -E pattern.
+# line is treated as a case-insensitive grep -E pattern. An empty pattern
+# list means we cannot verify anything, so fail closed.
 pattern_list="$(grep -Ev '^[[:space:]]*(#|$)' "$patterns" || true)"
 if [[ -z "$pattern_list" ]]; then
-    exit 0
+    echo "[pre-commit] BLOCKED: $patterns has no active patterns (all blank/comments)." >&2
+    echo "[pre-commit] Cannot verify staged content is free of PII without it." >&2
+    exit 1
 fi
 
-hits="$(printf '%s\n' "$added_lines" \
-    | grep -niE -f <(printf '%s\n' "$pattern_list") \
-    || true)"
+# Capture grep's exit code explicitly: 0 = matches found, 1 = no matches
+# (clean), >=2 = grep error (e.g. a bad regex in the pattern file) — treat
+# that as fail-closed rather than masking it with `|| true`.
+set +e
+hits="$(printf '%s\n' "$added_lines" | grep -niE -f <(printf '%s\n' "$pattern_list"))"
+grep_status=$?
+set -e
 
-if [[ -n "$hits" ]]; then
+if [[ $grep_status -ge 2 ]]; then
+    echo "[pre-commit] BLOCKED: grep failed while scanning staged content (exit $grep_status)." >&2
+    echo "[pre-commit] Check $patterns for a malformed regex." >&2
+    exit 1
+fi
+
+if [[ $grep_status -eq 0 && -n "$hits" ]]; then
     cat >&2 <<EOF
 
 [pre-commit] BLOCKED: staged content contains forbidden PII / sensitive patterns.
