@@ -47,11 +47,18 @@ EOF
     exit 1
 fi
 
-# Only inspect ADDED lines: everything starting with '+' except the '+++'
-# file header, with the single leading '+' stripped before scanning. This
-# ensures content that itself begins with '+' (e.g. an E.164 phone number
-# like +15551234567) is not accidentally dropped by a naive '^\+[^+]' filter.
-added_lines="$(printf '%s\n' "$staged_diff" | grep '^+' | grep -v '^+++' | cut -c2- || true)"
+# Only inspect ADDED content lines. Gate on the diff's hunk structure rather
+# than a naive '^+' filter: additions live INSIDE a hunk (after an '@@'
+# header), while the '+++ b/<path>' file header sits OUTSIDE any hunk (before
+# the first '@@'). This means content that itself begins with '+' — an E.164
+# number like +15551234567, or even a line whose content starts with '++'
+# (whose diff form is '+++...') — is scanned, while the file header is never
+# mistaken for content. The single leading diff '+' is stripped before scanning.
+added_lines="$(printf '%s\n' "$staged_diff" | awk '
+    /^diff --git / { in_hunk = 0; next }
+    /^@@/          { in_hunk = 1; next }
+    in_hunk && /^\+/ { print substr($0, 2) }
+')"
 if [[ -z "$added_lines" ]]; then
     exit 0
 fi
