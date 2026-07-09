@@ -1328,6 +1328,14 @@ class ZdInvoiceTests(unittest.TestCase):
             self.assertEqual(csv_rows[0]["status"], "Paid")
 
     def test_paid_with_no_matching_csv_row_does_not_falsely_claim_csv_update(self):
+        # This isolates cmd_paid's OWN honest-reporting logic (H.4). A.6 later
+        # added an auto-convergence pass (_auto_converge) that would heal this
+        # exact DB-ahead drift by appending the missing CSV row before cmd_paid
+        # patches it — the correct integrated behavior, covered by
+        # ReconcileConvergenceTests. Here we disable that layer so cmd_paid
+        # faces a genuinely-absent row (the degraded path where convergence
+        # could not heal) and must still report honestly rather than claim a
+        # CSV update it did not make.
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path, config_path = self._seed_invoice_row(tmpdir, "2026-0001")
             self._write_ledger_csv(
@@ -1345,7 +1353,8 @@ class ZdInvoiceTests(unittest.TestCase):
             )
             runner = CliRunner()
 
-            result = runner.invoke(zd.cli, ["paid", "2026-0001"])
+            with patch.object(zd, "_auto_converge", lambda conn: None):
+                result = runner.invoke(zd.cli, ["paid", "2026-0001"])
 
             self.assertEqual(result.exit_code, 0, msg=result.output)
             # DB must still be updated to Paid.
