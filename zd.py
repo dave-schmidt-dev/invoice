@@ -94,6 +94,59 @@ class SummaryServerError(Exception):
 # DB setup
 # ---------------------------------------------------------------------------
 
+# Target schema version. Bump this and add matching guarded ALTERs in _migrate
+# whenever init_db's CREATE TABLE statements gain a column that existing DBs
+# won't have. A fresh init_db DB and a migrated older DB must converge.
+_SCHEMA_VERSION = 1
+
+# Columns that _migrate must ensure exist on already-populated DBs. Each is
+# (table, column, "ALTER TABLE ... ADD COLUMN ..." SQL). These mirror the
+# columns added to the CREATE TABLE statements in init_db.
+_MIGRATIONS = (
+    ("invoices", "paid_date", "ALTER TABLE invoices ADD COLUMN paid_date TEXT"),
+    (
+        "invoices",
+        "billing_mode",
+        "ALTER TABLE invoices ADD COLUMN billing_mode TEXT DEFAULT 'hourly'",
+    ),
+    ("sessions", "billed_rate", "ALTER TABLE sessions ADD COLUMN billed_rate REAL"),
+)
+
+
+def _column_exists(conn, table, column):
+    """True if `column` is present on `table` (via PRAGMA table_info)."""
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    return any(row[1] == column for row in rows)
+
+
+def _migrate(conn):
+    """Bring an existing DB up to _SCHEMA_VERSION.
+
+    Fast path: if PRAGMA user_version is already at the target, do nothing
+    (idempotent, no backup). Otherwise back up the DB file once (INV-6:
+    every schema mutation is preceded by a backup) and add each missing
+    column. Each ALTER is guarded by PRAGMA table_info so a DB that already
+    has a column (e.g. an out-of-band `paid_date`) is left untouched.
+    """
+    current = conn.execute("PRAGMA user_version").fetchone()[0]
+    if current >= _SCHEMA_VERSION:
+        return
+
+    missing = [
+        (table, alter)
+        for table, column, alter in _MIGRATIONS
+        if not _column_exists(conn, table, column)
+    ]
+    if missing:
+        # Back up before touching schema. _backup_file is a no-op if the file
+        # doesn't exist yet (fresh in-memory create) or was already backed up.
+        _backup_file(ZD_DB)
+        for _table, alter in missing:
+            conn.execute(alter)
+
+    conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
+
+
 def get_conn():
     _backup_file(ZD_DB)
     conn = sqlite3.connect(ZD_DB)
@@ -121,7 +174,12 @@ def init_db():
                 hours       REAL NOT NULL,
                 notes       TEXT,
                 invoice_id  INTEGER REFERENCES invoices(id),  -- null = unbilled
-                created_at  TEXT DEFAULT (datetime('now'))
+                created_at  TEXT DEFAULT (datetime('now')),
+                -- Columns below are appended by _migrate on existing DBs via
+                -- ALTER TABLE ADD COLUMN, which always appends. Keep them last
+                -- here so a fresh init_db and a migrated DB have identical
+                -- column ordering (see _migrate / _SCHEMA_VERSION).
+                billed_rate REAL                     -- rate locked in at invoice time
             );
 
             CREATE TABLE IF NOT EXISTS expenses (
@@ -142,9 +200,16 @@ def init_db():
                 total           REAL NOT NULL,
                 status          TEXT DEFAULT 'Sent',  -- Sent | Paid
                 pdf_path        TEXT,
-                created_at      TEXT DEFAULT (datetime('now'))
+                created_at      TEXT DEFAULT (datetime('now')),
+                -- Columns below are appended by _migrate on existing DBs via
+                -- ALTER TABLE ADD COLUMN, which always appends. Keep them last
+                -- here so a fresh init_db and a migrated DB have identical
+                -- column ordering (see _migrate / _SCHEMA_VERSION).
+                paid_date       TEXT,                  -- ISO date the invoice was paid
+                billing_mode    TEXT DEFAULT 'hourly'  -- hourly | flat
             );
         """)
+        _migrate(conn)
 
 
 # ---------------------------------------------------------------------------
