@@ -259,7 +259,7 @@ class ZdInvoiceTests(unittest.TestCase):
 
         self.assertEqual(
             line_items[0]["description"],
-            "Week of Apr 6 - Evidence review and recovery memo drafting",
+            "Apr 6-7 - Evidence review and recovery memo drafting",
         )
         self.assertEqual(line_items[0]["hours"], 3.0)
         self.assertEqual(line_items[0]["amount"], 300.0)
@@ -311,7 +311,7 @@ class ZdInvoiceTests(unittest.TestCase):
 
         line_items = zd.group_sessions_by_week(sessions, summary_provider=failing_provider)
 
-        self.assertEqual(line_items[0]["description"], "Week of Apr 6")
+        self.assertEqual(line_items[0]["description"], "Apr 6")
 
     # ------------------------------------------------------------------
     # Task C.7 — summary-server errors fall back to plain week labels
@@ -330,12 +330,12 @@ class ZdInvoiceTests(unittest.TestCase):
 
         line_items = zd.group_sessions_by_week(sessions, summary_provider=server_down_provider)
 
-        self.assertEqual(line_items[0]["description"], "Week of Apr 6")
+        self.assertEqual(line_items[0]["description"], "Apr 6")
 
     def test_invoice_falls_back_to_plain_labels_when_summary_server_unavailable(self):
         """End-to-end: if _summary_server_context raises SummaryServerError
         on entry (server can't start), `zd invoice` must still exit 0 and
-        produce line items with plain 'Week of ...' labels rather than
+        produce line items with plain date-range labels rather than
         crashing the whole invoice."""
         import csv as _csv
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -364,9 +364,11 @@ class ZdInvoiceTests(unittest.TestCase):
             )
 
             # The invoice still generated: the CSV ledger row's line_items
-            # column carries the plain "Week of ..." labels (no " - <summary>"
-            # suffix) for both weeks in the April scope — 2026-04-01 kickoff
-            # (week of Mar 30) and 2026-04-30 closeout (week of Apr 27).
+            # column carries the plain date-range labels (no " - <summary>"
+            # suffix) for both weeks in the April scope. The labels come from
+            # the session dates themselves, so an April-scoped invoice shows
+            # "Apr 1" / "Apr 30" and never leaks the enclosing weeks' March
+            # Monday.
             with patch.object(zd, "ZD_DB", db_path), zd.get_conn() as conn:
                 inv_num = conn.execute(
                     "SELECT invoice_number FROM invoices ORDER BY id DESC LIMIT 1"
@@ -377,8 +379,9 @@ class ZdInvoiceTests(unittest.TestCase):
                 (r for r in csv_rows if r.get("invoice_number") == inv_num), None
             )
             self.assertIsNotNone(match, "expected the invoice in the CSV ledger")
-            self.assertIn("Week of Mar 30", match["line_items"])
-            self.assertIn("Week of Apr 27", match["line_items"])
+            self.assertIn("Apr 1", match["line_items"])
+            self.assertIn("Apr 30", match["line_items"])
+            self.assertNotIn("Mar ", match["line_items"])
 
     def test_invoice_falls_back_to_plain_labels_when_summary_spawn_raises_oserror(self):
         """The summary-server spawn does mkdir/open/Popen, which can raise
@@ -410,7 +413,7 @@ class ZdInvoiceTests(unittest.TestCase):
             with open(csv_path, newline="") as f:
                 csv_rows = list(_csv.DictReader(f))
             self.assertTrue(csv_rows, "expected the invoice in the CSV ledger")
-            self.assertIn("Week of Mar 30", csv_rows[-1]["line_items"])
+            self.assertIn("Apr 1", csv_rows[-1]["line_items"])
 
     def test_invoice_rejects_malformed_date_with_clean_error(self):
         """A malformed --date must fail as a clean ClickException (as cmd_log
@@ -441,30 +444,77 @@ class ZdInvoiceTests(unittest.TestCase):
     # ------------------------------------------------------------------
 
     def test_week_key_is_year_inclusive_monday_iso_date(self):
-        # 2026-01-06 and 2032-01-08 both fall in a week whose Monday is
-        # "Jan 5" (week_label has no year), but the Mondays themselves are
-        # different years: 2026-01-05 vs 2032-01-05.
-        self.assertEqual(zd.week_label("2026-01-06"), "Week of Jan 5")
-        self.assertEqual(zd.week_label("2032-01-08"), "Week of Jan 5")
+        # 2026-01-06 and 2032-01-06 render the IDENTICAL label "Jan 6"
+        # (week_label has no year), but their week Mondays are in different
+        # years: 2026-01-05 vs 2032-01-05.
+        self.assertEqual(zd.week_label("2026-01-06"), "Jan 6")
+        self.assertEqual(zd.week_label("2032-01-06"), "Jan 6")
         self.assertEqual(zd.week_key("2026-01-06"), "2026-01-05")
-        self.assertEqual(zd.week_key("2032-01-08"), "2032-01-05")
+        self.assertEqual(zd.week_key("2032-01-06"), "2032-01-05")
+
+    # ------------------------------------------------------------------
+    # Week labels render the dates actually worked (no out-of-period dates)
+    # ------------------------------------------------------------------
+
+    def test_week_label_renders_the_dates_actually_worked(self):
+        # A single day collapses to that day.
+        self.assertEqual(zd.week_label("2026-08-01"), "Aug 1")
+        self.assertEqual(zd.week_label(["2026-08-05"]), "Aug 5")
+        # A range within one month repeats only the day number.
+        self.assertEqual(zd.week_label(["2026-08-03", "2026-08-07"]), "Aug 3-7")
+        # Unsorted input is normalized.
+        self.assertEqual(zd.week_label(["2026-08-07", "2026-08-03"]), "Aug 3-7")
+        # A range crossing a month boundary repeats the month.
+        self.assertEqual(
+            zd.week_label(["2026-08-31", "2026-09-02"]), "Aug 31-Sep 2"
+        )
+
+    def test_week_label_never_shows_a_date_before_the_first_session(self):
+        """A weekend-only week must not advertise the previous month's
+        Monday. Aug 1/2 2026 are Sat/Sun in the week of Mon Jul 27; an
+        August-scoped invoice must read "Aug 1-2", never "Week of Jul 27"."""
+        sessions = [
+            {"work_date": "2026-08-01", "hours": 3.0, "rate": 100.0, "notes": "sat work"},
+            {"work_date": "2026-08-02", "hours": 3.0, "rate": 100.0, "notes": "sun work"},
+        ]
+
+        line_items = zd.group_sessions_by_week(sessions)
+
+        self.assertEqual(len(line_items), 1)
+        self.assertEqual(line_items[0]["description"], "Aug 1-2")
+        self.assertNotIn("Jul", line_items[0]["description"])
+        self.assertEqual(line_items[0]["hours"], 6.0)
+
+    def test_week_label_spans_a_month_boundary_within_one_week(self):
+        """Mon Aug 31 2026 and Wed Sep 2 2026 share a week, so they stay ONE
+        line item, labelled across the month boundary."""
+        sessions = [
+            {"work_date": "2026-08-31", "hours": 2.0, "rate": 100.0, "notes": "monday"},
+            {"work_date": "2026-09-02", "hours": 4.0, "rate": 100.0, "notes": "wednesday"},
+        ]
+
+        line_items = zd.group_sessions_by_week(sessions)
+
+        self.assertEqual(len(line_items), 1)
+        self.assertEqual(line_items[0]["description"], "Aug 31-Sep 2")
+        self.assertEqual(line_items[0]["hours"], 6.0)
 
     def test_group_sessions_by_week_does_not_merge_same_label_across_years(self):
         """Two sessions that produce the IDENTICAL week_label string
-        ("Week of Jan 5") but fall in different years (2026 and 2032) must
+        ("Jan 6") but fall in different years (2026 and 2032) must
         stay as TWO separate line items — grouping must key off the full
         Monday ISO date, not the year-less label string."""
         sessions = [
             {"work_date": "2026-01-06", "hours": 3.0, "rate": 100.0, "notes": "2026 work"},
-            {"work_date": "2032-01-08", "hours": 5.0, "rate": 100.0, "notes": "2032 work"},
+            {"work_date": "2032-01-06", "hours": 5.0, "rate": 100.0, "notes": "2032 work"},
         ]
 
         line_items = zd.group_sessions_by_week(sessions)
 
         self.assertEqual(len(line_items), 2)
         # Both share the same displayed label...
-        self.assertEqual(line_items[0]["description"], "Week of Jan 5")
-        self.assertEqual(line_items[1]["description"], "Week of Jan 5")
+        self.assertEqual(line_items[0]["description"], "Jan 6")
+        self.assertEqual(line_items[1]["description"], "Jan 6")
         # ...but hours must NOT be summed together (no silent billing merge).
         hours = sorted(li["hours"] for li in line_items)
         self.assertEqual(hours, [3.0, 5.0])
@@ -497,7 +547,7 @@ class ZdInvoiceTests(unittest.TestCase):
         response.__exit__ = Mock(return_value=None)
 
         with patch.object(zd.urllib.request, "urlopen", return_value=response) as mock_urlopen:
-            summary = zd.summarize_week_with_local_gemma("Week of Apr 6", sessions)
+            summary = zd.summarize_week_with_local_gemma("Apr 6", sessions)
 
         self.assertEqual(summary, "Evidence review")
         request = mock_urlopen.call_args.args[0]
@@ -575,7 +625,7 @@ class ZdInvoiceTests(unittest.TestCase):
             {"work_date": "2026-04-06", "hours": 1.0, "rate": 100.0, "notes": "   "},
         ]
         with self.assertRaises(zd.WeekSummaryError):
-            zd.summarize_week_with_local_gemma("Week of Apr 6", empty_notes_sessions)
+            zd.summarize_week_with_local_gemma("Apr 6", empty_notes_sessions)
 
         response = Mock()
         response.read.return_value = json.dumps({"choices": [{}]}).encode("utf-8")
@@ -585,7 +635,7 @@ class ZdInvoiceTests(unittest.TestCase):
         with patch.object(zd.urllib.request, "urlopen", return_value=response):
             with self.assertRaises(zd.WeekSummaryError) as ctx:
                 zd.summarize_week_with_local_gemma(
-                    "Week of Apr 6",
+                    "Apr 6",
                     [{"work_date": "2026-04-06", "hours": 1.0, "rate": 100.0, "notes": "reviewed evidence"}],
                 )
 

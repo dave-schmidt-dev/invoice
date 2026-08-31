@@ -426,12 +426,29 @@ def get_client(conn, slug):
     return row
 
 
-def week_label(iso_date_str):
-    """Return 'Week of Mon DD' for a given ISO date string."""
-    d = date.fromisoformat(iso_date_str)
-    # Find Monday of that week
-    monday = d - timedelta(days=d.weekday())
-    return f"Week of {monday.strftime('%b %-d')}"
+def week_label(iso_dates):
+    """Return a compact range covering the ISO date string(s) given.
+
+    The label renders the dates ACTUALLY worked, not the enclosing Mon-Sun
+    week, so a line item can never display a date outside the billed period
+    (a lone Saturday Aug 1 session reads "Aug 1", not "Week of Jul 27").
+    Formats: "Aug 5" (single day), "Aug 3-9" (within one month),
+    "Aug 31-Sep 2" (crossing a month boundary). No year, consistent with the
+    rest of the invoice; week_key remains the year-inclusive grouping key.
+
+    Accepts a single ISO date string or an iterable of them.
+    """
+    if isinstance(iso_dates, str):
+        iso_dates = [iso_dates]
+    days = sorted(date.fromisoformat(d) for d in iso_dates)
+    if not days:
+        raise ValueError("week_label requires at least one date")
+    first, last = days[0], days[-1]
+    if first == last:
+        return first.strftime("%b %-d")
+    if (first.year, first.month) == (last.year, last.month):
+        return f"{first.strftime('%b %-d')}-{last.day}"
+    return f"{first.strftime('%b %-d')}-{last.strftime('%b %-d')}"
 
 
 def week_key(iso_date_str):
@@ -699,17 +716,17 @@ def group_sessions_by_week(sessions, summary_provider=None):
     Grouped by the Monday's full ISO date (week_key), which is year-inclusive,
     so two sessions whose weeks share a month/day Monday but fall in
     different years are never merged into one line item (a silent billing
-    merge across years). The human-facing `label`/description still uses
-    week_label's "Week of Mon DD" format (no year) — only the grouping KEY
-    changed. Returns list of dicts: {description, hours, rate, amount},
-    sorted chronologically by the Monday ISO key.
+    merge across years). The human-facing `label`/description is derived from
+    the group's actual session dates (week_label), so it never shows a date
+    outside the billed period. Returns list of dicts:
+    {description, hours, rate, amount}, sorted chronologically by the Monday
+    ISO key.
     """
     weeks = {}
     for s in sessions:
         key = week_key(s["work_date"])
         if key not in weeks:
             weeks[key] = {
-                "label": week_label(s["work_date"]),
                 "sessions": [],
                 "hours": 0.0,
                 "rate": s["rate"],
@@ -720,20 +737,24 @@ def group_sessions_by_week(sessions, summary_provider=None):
     result = []
     for key in sorted(weeks.keys()):
         data = weeks[key]
+        # Label from the dates actually worked, not the enclosing Mon-Sun
+        # week, so an invoice scoped to a month never displays a prior-month
+        # Monday.
+        label = week_label([x["work_date"] for x in data["sessions"]])
         rate = data["rate"]
         # Use the raw accumulated hours — to_money already quantizes the
         # amount to cents (Decimal/ROUND_HALF_UP). A pre-round of hours here
         # is an extra rounding step that only adds skew (INV-4).
         hours = data["hours"]
         amount = float(to_money(hours * rate))
-        description = data["label"]
+        description = label
         if summary_provider is not None:
             try:
-                summary = summary_provider(data["label"], data["sessions"])
+                summary = summary_provider(label, data["sessions"])
                 if summary:
-                    description = f"{data['label']} - {_clean_week_summary(summary)}"
+                    description = f"{label} - {_clean_week_summary(summary)}"
             except (WeekSummaryError, SummaryServerError) as exc:
-                click.echo(f"  ⚠  Weekly summary unavailable for {data['label']}: {exc}")
+                click.echo(f"  ⚠  Weekly summary unavailable for {label}: {exc}")
         result.append({
             "description": description,
             "hours": hours,

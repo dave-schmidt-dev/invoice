@@ -188,6 +188,8 @@ zd invoice --help
 
 `zd invoice <client> --month YYYY-MM` limits a new invoice to unbilled sessions and expenses in that calendar month. Other unbilled work for the same client remains available for a later invoice.
 
+Sessions are grouped into weekly line items (Monday-anchored, year-inclusive so weeks in different years never merge), but each line item is *labelled* with the dates actually worked: `Aug 5`, `Aug 3-7`, `Aug 31-Sep 2`. A label therefore never shows a date outside the invoiced period — a weekend-only week at the start of a month reads `Aug 1-2`, not `Week of Jul 27`.
+
 `--summarize-weeks` adds one-line weekly summaries to invoice line items via a local OpenAI-compatible Gemma server. zd auto-starts the server when needed (`llama-server` serving a small Gemma GGUF) and shuts it down again on exit, so there is no manual server-management step. You can enable summaries by default in `~/.invoice_config.json`:
 
 ```json
@@ -210,7 +212,7 @@ Requirements:
 - `llama-server` (current llama.cpp) on PATH. macOS: `brew install llama.cpp`.
 - A GGUF weights file at `model_path`.
 
-If a server is already responding at `base_url` when zd starts, zd will use it instead of spawning a new one (and won't shut it down at the end — that server belongs to someone else). If spawning fails, or if `/health` doesn't respond within the startup timeout, zd aborts cleanly. If the summary API call fails for any other reason, invoice generation falls back to the plain `Week of ...` labels.
+If a server is already responding at `base_url` when zd starts, zd will use it instead of spawning a new one (and won't shut it down at the end — that server belongs to someone else). If spawning fails, or if `/health` doesn't respond within the startup timeout, zd aborts cleanly. If the summary API call fails for any other reason, invoice generation falls back to the plain date-range labels.
 
 Environment overrides: `ZD_SUMMARY_BASE_URL`, `ZD_SUMMARY_MODEL`, `ZD_SUMMARY_MODEL_PATH`, `ZD_SUMMARY_LOG`, `ZD_SUMMARY_TIMEOUT`.
 
