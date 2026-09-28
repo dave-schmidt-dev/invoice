@@ -37,6 +37,22 @@ from pathlib import Path
 
 import click
 from click.shell_completion import CompletionItem
+from zd_store import (  # noqa: E402,F401 - moved to zd_store.py
+    _MAX_BACKUPS, _backed_up_this_run, _backup_file, _backup_db, _SCHEMA_VERSION,
+    _MIGRATIONS, _column_exists, MONEY, to_money, get_client, week_label, week_key,
+    BACKFILL_SESSIONS, SEED_CLIENTS, _due_date_str, _month_bounds,
+)
+from zd_summary import (  # noqa: E402,F401 - moved to zd_summary.py
+    LOCAL_SUMMARY_BASE_URL, LOCAL_SUMMARY_MODEL, LOCAL_SUMMARY_MODEL_PATH,
+    LOCAL_SUMMARY_LOG, LOCAL_SUMMARY_TIMEOUT, LOCAL_SUMMARY_STARTUP_TIMEOUT,
+    WeekSummaryError, SummaryServerError, _clean_week_summary, _notes_for_summary,
+    _summary_timeout, _weekly_summary_config, _parse_host_port, _is_loopback_host,
+    summarize_week_with_local_gemma, group_sessions_by_week,
+)
+from zd_reconcile import (  # noqa: E402,F401 - moved to zd_reconcile.py
+    _SCRIPT_DIR, INVOICE_PY, _ReconcileResult, _reconstruct_csv_line_items,
+    _converge_db_to_csv,
+)
 
 LOG_FILE = os.environ.get("ZD_LOG_FILE", "/tmp/zd.log")
 
@@ -81,62 +97,6 @@ def _setup_logging(debug: bool):
 # Backups — timestamped copies before any destructive write, keep last 20
 # ---------------------------------------------------------------------------
 
-_MAX_BACKUPS = 20
-_backed_up_this_run: set[str] = set()
-
-
-def _backup_file(path):
-    """Create a timestamped backup of path if it exists. Once per path per run.
-
-    Used for CSV/config backups (plain file copy). DB backups go through
-    _backup_db instead, which uses SQLite's online-backup API so a live
-    WAL-mode DB is never copied mid-write (see _backup_db)."""
-    path = Path(path)
-    key = str(path)
-    if key in _backed_up_this_run or not path.exists():
-        return
-    _backed_up_this_run.add(key)
-    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-    backup = path.with_suffix(f"{path.suffix}.{ts}.bak")
-    shutil.copy2(path, backup)
-    # Prune old backups, keep last _MAX_BACKUPS
-    pattern = f"{path.name}.*.bak"
-    backups = sorted(path.parent.glob(pattern))
-    for old in backups[:-_MAX_BACKUPS]:
-        old.unlink(missing_ok=True)
-
-
-def _backup_db(conn, db_path):
-    """Snapshot an OPEN sqlite3 connection to a timestamped .bak file via the
-    SQLite online-backup API, so a live WAL-mode DB is never copied mid-write
-    (shutil.copy2 can grab a torn snapshot when committed frames sit in the
-    -wal sidecar). Once per path per run, pruned to _MAX_BACKUPS like
-    _backup_file. No-op if the source DB has no user tables yet (a fresh/
-    empty DB has nothing worth snapshotting).
-    """
-    db_path = Path(db_path)
-    key = str(db_path)
-    if key in _backed_up_this_run or not db_path.exists():
-        return
-    table_count = conn.execute(
-        "SELECT count(*) FROM sqlite_master WHERE type='table'"
-    ).fetchone()[0]
-    if not table_count:
-        return
-    _backed_up_this_run.add(key)
-    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-    backup_path = db_path.with_suffix(f"{db_path.suffix}.{ts}.bak")
-    dest = sqlite3.connect(backup_path)
-    try:
-        with dest:
-            conn.backup(dest)
-    finally:
-        dest.close()
-    # Prune old backups, keep last _MAX_BACKUPS
-    pattern = f"{db_path.name}.*.bak"
-    backups = sorted(db_path.parent.glob(pattern))
-    for old in backups[:-_MAX_BACKUPS]:
-        old.unlink(missing_ok=True)
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -144,57 +104,13 @@ def _backup_db(conn, db_path):
 
 ZD_DB = Path.home() / ".zd.db"
 
-# Locate invoice.py relative to this script (they live in the same project dir)
-_SCRIPT_DIR = Path(__file__).resolve().parent
-INVOICE_PY = _SCRIPT_DIR / "invoice.py"
 
 CONFIG_FILE = Path.home() / ".invoice_config.json"
 
-LOCAL_SUMMARY_BASE_URL = os.environ.get("ZD_SUMMARY_BASE_URL", "http://127.0.0.1:8086")
-LOCAL_SUMMARY_MODEL = os.environ.get("ZD_SUMMARY_MODEL", "summarizer")
-LOCAL_SUMMARY_MODEL_PATH = os.environ.get(
-    "ZD_SUMMARY_MODEL_PATH",
-    str(Path.home() / "models/narrator-bench/gemma-e2b/gemma-4-E2B-it-Q4_K_M.gguf"),
-)
-LOCAL_SUMMARY_LOG = os.environ.get("ZD_SUMMARY_LOG", "/tmp/zd-summary-server.log")
-LOCAL_SUMMARY_TIMEOUT = 30.0
-LOCAL_SUMMARY_STARTUP_TIMEOUT = 60.0
-
-
-class WeekSummaryError(Exception):
-    """Raised when weekly summary generation cannot produce usable text."""
-
-
-class SummaryServerError(Exception):
-    """Raised when the local llama-server cannot be brought up for summaries."""
 
 # ---------------------------------------------------------------------------
 # DB setup
 # ---------------------------------------------------------------------------
-
-# Target schema version. Bump this and add matching guarded ALTERs in _migrate
-# whenever init_db's CREATE TABLE statements gain a column that existing DBs
-# won't have. A fresh init_db DB and a migrated older DB must converge.
-_SCHEMA_VERSION = 1
-
-# Columns that _migrate must ensure exist on already-populated DBs. Each is
-# (table, column, "ALTER TABLE ... ADD COLUMN ..." SQL). These mirror the
-# columns added to the CREATE TABLE statements in init_db.
-_MIGRATIONS = (
-    ("invoices", "paid_date", "ALTER TABLE invoices ADD COLUMN paid_date TEXT"),
-    (
-        "invoices",
-        "billing_mode",
-        "ALTER TABLE invoices ADD COLUMN billing_mode TEXT DEFAULT 'hourly'",
-    ),
-    ("sessions", "billed_rate", "ALTER TABLE sessions ADD COLUMN billed_rate REAL"),
-)
-
-
-def _column_exists(conn, table, column):
-    """True if `column` is present on `table` (via PRAGMA table_info)."""
-    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
-    return any(row[1] == column for row in rows)
 
 
 def _migrate(conn):
@@ -307,11 +223,6 @@ def init_db():
 # Helpers
 # ---------------------------------------------------------------------------
 
-MONEY = Decimal("0.01")
-
-def to_money(v):
-    return Decimal(str(v)).quantize(MONEY, rounding=ROUND_HALF_UP)
-
 
 def _complete_client(ctx, param, incomplete):
     try:
@@ -415,108 +326,6 @@ def _sync_client_to_config(name):
         inv_mod._atomic_write_json(CONFIG_FILE, config)
 
 
-def get_client(conn, slug):
-    row = conn.execute(
-        "SELECT * FROM clients WHERE slug = ?", (slug.lower(),)
-    ).fetchone()
-    if not row:
-        raise click.ClickException(
-            f"Client '{slug}' not found. Run `zd clients` to see available clients."
-        )
-    return row
-
-
-def week_label(iso_dates):
-    """Return a compact range covering the ISO date string(s) given.
-
-    The label renders the dates ACTUALLY worked, not the enclosing Mon-Sun
-    week, so a line item can never display a date outside the billed period
-    (a lone Saturday Aug 1 session reads "Aug 1", not "Week of Jul 27").
-    Formats: "Aug 5" (single day), "Aug 3-9" (within one month),
-    "Aug 31-Sep 2" (crossing a month boundary). No year, consistent with the
-    rest of the invoice; week_key remains the year-inclusive grouping key.
-
-    Accepts a single ISO date string or an iterable of them.
-    """
-    if isinstance(iso_dates, str):
-        iso_dates = [iso_dates]
-    days = sorted(date.fromisoformat(d) for d in iso_dates)
-    if not days:
-        raise ValueError("week_label requires at least one date")
-    first, last = days[0], days[-1]
-    if first == last:
-        return first.strftime("%b %-d")
-    if (first.year, first.month) == (last.year, last.month):
-        return f"{first.strftime('%b %-d')}-{last.day}"
-    return f"{first.strftime('%b %-d')}-{last.strftime('%b %-d')}"
-
-
-def week_key(iso_date_str):
-    """Return the ISO date (year-inclusive) of the Monday of iso_date_str's week.
-
-    Used as the GROUPING key in group_sessions_by_week so two sessions whose
-    weeks share a month/day Monday but fall in different years never collapse
-    into the same line item (week_label's displayed string has no year)."""
-    d = date.fromisoformat(iso_date_str)
-    monday = d - timedelta(days=d.weekday())
-    return monday.isoformat()
-
-
-def _clean_week_summary(text):
-    """Normalize local LLM output into a short invoice-safe phrase."""
-    summary = " ".join(str(text or "").strip().split())
-    if not summary:
-        raise WeekSummaryError("empty summary")
-    summary = summary.strip("\"'` ")
-    if summary.endswith("."):
-        summary = summary[:-1]
-    if len(summary) > 140:
-        summary = summary[:137].rstrip() + "..."
-    return summary
-
-
-def _notes_for_summary(sessions):
-    """Build compact dated notes text for a weekly summary prompt."""
-    lines = []
-    for s in sessions:
-        notes = (s["notes"] or "").strip()
-        if notes:
-            lines.append(f"- {s['work_date']}: {notes}")
-    return "\n".join(lines)
-
-
-def _summary_timeout(value, default=LOCAL_SUMMARY_TIMEOUT):
-    """Return a positive timeout value, falling back for invalid config/env input."""
-    try:
-        timeout = float(value)
-    except (TypeError, ValueError):
-        return default
-    if timeout <= 0:
-        return default
-    return timeout
-
-
-def _weekly_summary_config(config):
-    """Return normalized weekly summary settings from invoice config.
-
-    Adds `model_path` (path to the GGUF weights) and `log_path` (where
-    llama-server's stdout/stderr go when we spawn it) so the auto-start
-    helper can find them without extra config plumbing."""
-    summary_config = (
-        config.get("zd", {})
-        .get("weekly_summaries", {})
-    )
-    default_timeout = _summary_timeout(os.environ.get("ZD_SUMMARY_TIMEOUT"))
-    return {
-        "enabled": bool(summary_config.get("enabled", False)),
-        "base_url": summary_config.get("base_url") or LOCAL_SUMMARY_BASE_URL,
-        "model": summary_config.get("model") or LOCAL_SUMMARY_MODEL,
-        "model_path": summary_config.get("model_path") or LOCAL_SUMMARY_MODEL_PATH,
-        "log_path": summary_config.get("log_path") or LOCAL_SUMMARY_LOG,
-        "timeout_seconds": _summary_timeout(summary_config.get("timeout_seconds"), default_timeout),
-    }
-
-
 def _server_alive(base_url, timeout=2.0):
     """Return True if base_url responds 200 on /health."""
     try:
@@ -526,24 +335,6 @@ def _server_alive(base_url, timeout=2.0):
             return resp.status == 200
     except Exception:
         return False
-
-
-def _parse_host_port(base_url, default_port=8086):
-    parsed = urllib.parse.urlparse(base_url)
-    return parsed.hostname or "127.0.0.1", str(parsed.port or default_port)
-
-
-def _is_loopback_host(host):
-    """True if `host` refers to the local machine (INV-1: client session
-    notes must not silently leave the machine for summarization).
-
-    Recognizes the common loopback spellings: "127.0.0.1" (and the rest of
-    the 127.0.0.0/8 block), "::1", and "localhost". Anything else (a LAN IP,
-    a hostname, a public address) is treated as non-loopback."""
-    host = (host or "").strip().lower()
-    if host in ("localhost", "::1"):
-        return True
-    return host.startswith("127.")
 
 
 def _spawn_summary_server(model_path, base_url, alias, log_path):
@@ -655,128 +446,9 @@ def _summary_server_context(summary_settings):
             _shutdown_summary_server(proc)
 
 
-def summarize_week_with_local_gemma(
-    label,
-    sessions,
-    *,
-    base_url=LOCAL_SUMMARY_BASE_URL,
-    model=LOCAL_SUMMARY_MODEL,
-    timeout=LOCAL_SUMMARY_TIMEOUT,
-):
-    """Generate a one-line weekly invoice summary using the local Gemma server."""
-    notes = _notes_for_summary(sessions)
-    if not notes:
-        raise WeekSummaryError("no notes to summarize")
-
-    payload = {
-        "model": model,
-        "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "You write concise professional invoice line item summaries. "
-                    "Return exactly one plain-text sentence fragment, no markdown, no quotes, no bullets."
-                ),
-            },
-            {
-                "role": "user",
-                "content": (
-                    f"Summarize this consulting work for {label} in 12 words or fewer. "
-                    "Do not mention hours, dates, rates, invoices, or the client name.\n\n"
-                    f"{notes}"
-                ),
-            },
-        ],
-        "temperature": 0.2,
-        "max_tokens": 48,
-    }
-    request = urllib.request.Request(
-        f"{base_url.rstrip('/')}/v1/chat/completions",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            data = json.loads(response.read().decode("utf-8"))
-    except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
-        raise WeekSummaryError(str(exc)) from exc
-
-    try:
-        content = data["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError) as exc:
-        raise WeekSummaryError("local summary response missing content") from exc
-    return _clean_week_summary(content)
-
-
-def group_sessions_by_week(sessions, summary_provider=None):
-    """
-    Group a list of session rows by calendar week.
-
-    Grouped by the Monday's full ISO date (week_key), which is year-inclusive,
-    so two sessions whose weeks share a month/day Monday but fall in
-    different years are never merged into one line item (a silent billing
-    merge across years). The human-facing `label`/description is derived from
-    the group's actual session dates (week_label), so it never shows a date
-    outside the billed period. Returns list of dicts:
-    {description, hours, rate, amount}, sorted chronologically by the Monday
-    ISO key.
-    """
-    weeks = {}
-    for s in sessions:
-        key = week_key(s["work_date"])
-        if key not in weeks:
-            weeks[key] = {
-                "sessions": [],
-                "hours": 0.0,
-                "rate": s["rate"],
-            }
-        weeks[key]["sessions"].append(s)
-        weeks[key]["hours"] += s["hours"]
-
-    result = []
-    for key in sorted(weeks.keys()):
-        data = weeks[key]
-        # Label from the dates actually worked, not the enclosing Mon-Sun
-        # week, so an invoice scoped to a month never displays a prior-month
-        # Monday.
-        label = week_label([x["work_date"] for x in data["sessions"]])
-        rate = data["rate"]
-        # Use the raw accumulated hours — to_money already quantizes the
-        # amount to cents (Decimal/ROUND_HALF_UP). A pre-round of hours here
-        # is an extra rounding step that only adds skew (INV-4).
-        hours = data["hours"]
-        amount = float(to_money(hours * rate))
-        description = label
-        if summary_provider is not None:
-            try:
-                summary = summary_provider(label, data["sessions"])
-                if summary:
-                    description = f"{label} - {_clean_week_summary(summary)}"
-            except (WeekSummaryError, SummaryServerError) as exc:
-                click.echo(f"  ⚠  Weekly summary unavailable for {label}: {exc}")
-        result.append({
-            "description": description,
-            "hours": hours,
-            "rate": rate,
-            "amount": amount,
-        })
-    return result
-
-
 # ---------------------------------------------------------------------------
 # Seed data (backfill)
 # ---------------------------------------------------------------------------
-
-BACKFILL_SESSIONS = [
-    # Add your historical sessions here:
-    # ("client-slug", "YYYY-MM-DD", hours, "notes"),
-]
-
-SEED_CLIENTS = [
-    # Add your clients here:
-    # ("slug", "Client Name", hourly_rate),
-]
 
 
 # ---------------------------------------------------------------------------
@@ -930,254 +602,6 @@ def cmd_expense(client, amount, description, expense_date):
 
     click.echo(f"  ✓  {expense_date}  {c['name']}  ${amount:,.2f}  {description}")
     _worklog(f"- [zd expense] {expense_date} | {c['slug']} | ${amount:,.2f} | \"{description}\"")
-
-
-class _ReconcileResult:
-    """Summary of a single _converge_db_to_csv pass.
-
-    `ok` is False only when the DB/config/ledger could not even be loaded
-    (a soft, non-fatal degrade — see _converge_db_to_csv). `warning` carries
-    a one-line human explanation for that case. The four lists below hold
-    human-readable strings describing each drifted invoice, for reporting
-    by `zd reconcile` and the auto-convergence callers.
-    """
-
-    def __init__(self):
-        self.ok = True
-        self.warning = None
-        self.appended = []       # DB-ahead: rows appended to the CSV
-        self.status_synced = []  # DB status="Paid" patched into the CSV
-        self.total_drift = []    # session-sum vs stored-total mismatches (flagged only)
-        self.orphans = []        # CSV-only rows with no matching DB invoice (flagged only)
-
-    @property
-    def changed(self):
-        return bool(self.appended or self.status_synced)
-
-    @property
-    def flagged(self):
-        return bool(self.total_drift or self.orphans)
-
-
-def _reconstruct_csv_line_items(conn, inv_row, client_row):
-    """Rebuild the `line_items` list for inv_row exactly as the `zd invoice
-    --regenerate` path does (zd.py's regenerate branch), but WITHOUT ever
-    touching the weekly-summary server: summary_provider is always None here.
-    Reconcile runs opportunistically (at the top of ordinary commands) and
-    must never spawn/await llama-server.
-
-    Mirrors the shape at zd.py:1310-1416 (billed-session query with
-    COALESCE(s.billed_rate, cl.rate) AS rate, the flat-mode single "Flat fee"
-    item, and per-expense line items).
-    """
-    sessions = conn.execute(
-        """SELECT s.*, COALESCE(s.billed_rate, cl.rate) AS rate FROM sessions s
-           JOIN clients cl ON cl.id = s.client_id
-           WHERE s.invoice_id = ?
-           ORDER BY s.work_date""",
-        (inv_row["id"],),
-    ).fetchall()
-
-    billing_mode = inv_row["billing_mode"] if "billing_mode" in inv_row.keys() else None
-
-    if billing_mode == "flat":
-        stored_total = to_money(str(inv_row["total"]))
-        return [{
-            "description": "Flat fee",
-            "hours": 0,
-            "rate": 0,
-            "amount": float(stored_total),
-        }]
-
-    line_items = group_sessions_by_week(sessions, summary_provider=None)
-
-    expenses = conn.execute(
-        "SELECT * FROM expenses WHERE invoice_id = ?",
-        (inv_row["id"],),
-    ).fetchall()
-    for e in expenses:
-        line_items.append({
-            "description": f"Expense: {e['description']}",
-            "hours": 0,
-            "rate": 0,
-            "amount": float(to_money(e["amount"])),
-        })
-    return line_items
-
-
-def _converge_db_to_csv(conn, *, apply, report=True, echo_prefix=""):
-    """Reconcile the CSV ledger (a projection) against the zd DB (the
-    authoritative store). Only ever writes the CSV, and only in the
-    DB-ahead-of-CSV direction:
-
-      - a DB invoice missing from the CSV gets APPENDED (reconstructed from
-        the DB via _reconstruct_csv_line_items);
-      - a DB invoice with status="Paid" whose CSV row still says something
-        else gets its CSV status field PATCHED to "Paid" in place.
-
-    It NEVER writes the DB, NEVER imports a CSV-only row into the DB, NEVER
-    deletes a CSV row, NEVER changes a stored invoice total, and NEVER
-    downgrades a CSV status (a CSV that already says "Paid" while the DB
-    disagrees is the dangerous direction and is left completely alone —
-    not even flagged as an orphan/drift, since status mismatches other than
-    DB-Paid/CSV-behind are intentionally out of scope here).
-
-    Also FLAGS (report-only, never auto-fixed):
-      - session-sum vs stored-total drift beyond a cent;
-      - CSV-only orphans (a CSV invoice_number absent from the DB).
-
-    Degrades gracefully on any expected failure (missing config, missing
-    ledger, load failure) by returning a no-op _ReconcileResult — this
-    function is called opportunistically from ordinary commands and must
-    NEVER raise out to the caller.
-    """
-    result = _ReconcileResult()
-    try:
-        import importlib.util
-        spec = importlib.util.spec_from_file_location("invoice", INVOICE_PY)
-        inv_mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(inv_mod)
-        config = inv_mod.load_config()
-        csv_path = Path(inv_mod._ledger_path_from_config(config))
-    except Exception as e:
-        result.ok = False
-        result.warning = f"reconcile: could not load invoice.py/config ({e})"
-        return result
-
-    try:
-        inv_rows = conn.execute(
-            """SELECT i.id, i.invoice_number, i.invoice_date, i.total, i.status,
-                      i.pdf_path, i.client_id, i.billing_mode, cl.name AS client_name,
-                      cl.rate AS client_rate
-               FROM invoices i JOIN clients cl ON cl.id = i.client_id
-               ORDER BY i.invoice_date, i.invoice_number"""
-        ).fetchall()
-    except Exception as e:
-        result.ok = False
-        result.warning = f"reconcile: could not read invoices from the DB ({e})"
-        return result
-
-    if not csv_path.exists():
-        if not apply:
-            # Nothing to compare against; every DB invoice is technically
-            # "missing" from a nonexistent ledger, but with no ledger file
-            # there's no safe in-place patch target either way. Report
-            # nothing rather than a wall of noise for a brand-new setup.
-            return result
-        # apply=True with no ledger file yet: fall through, each DB invoice
-        # will be treated as missing and appended (save_to_csv creates the
-        # file).
-        csv_rows, csv_headers = [], []
-        csv_by_number = {}
-    else:
-        try:
-            csv_rows, csv_headers = inv_mod._read_csv_with_headers(csv_path)
-        except Exception as e:
-            result.ok = False
-            result.warning = f"reconcile: could not read the CSV ledger ({e})"
-            return result
-        inv_key = inv_mod._csv_field_key(csv_headers, "invoice_number") or "invoice_number"
-        csv_by_number = {str(r.get(inv_key, "")): r for r in csv_rows}
-
-    db_numbers = {str(r["invoice_number"]) for r in inv_rows}
-
-    # ---- Orphans: CSV rows with no matching DB invoice (flag only) ----
-    # Report-only work; the auto-converge hot path passes report=False since it
-    # only ever acts on missing/status-behind rows.
-    if report:
-        for number, row in csv_by_number.items():
-            if number and number not in db_numbers:
-                result.orphans.append(number)
-
-    missing_rows = []       # DB invoices absent from the CSV -> append
-    status_behind_rows = [] # DB status=Paid, CSV status != Paid -> patch
-
-    for inv_row in inv_rows:
-        number = str(inv_row["invoice_number"])
-        csv_row = csv_by_number.get(number)
-
-        if csv_row is None:
-            missing_rows.append(inv_row)
-        else:
-            csv_status = csv_row.get(
-                inv_mod._csv_field_key(csv_headers, "status") or "status"
-            )
-            if inv_row["status"] == "Paid" and csv_status != "Paid":
-                status_behind_rows.append(inv_row)
-            # Any OTHER status mismatch (e.g. CSV says Paid, DB says Sent)
-            # is the dangerous direction: never touched, never even flagged
-            # here (it is not a DB-ahead condition this function repairs).
-
-        # ---- Session-sum vs stored-total drift (flag only, report path) ----
-        # Report-only, so skipped on the auto-converge hot path (report=False).
-        # Flat invoices bill a fixed amount, not hours*rate — never flag them.
-        if report and inv_row["billing_mode"] != "flat":
-            try:
-                # Recompute the total EXACTLY as the billing / regenerate paths
-                # do: sum to_money(line-item amount) over the reconstructed line
-                # items (per-week grouping), NOT a per-session pre-round of
-                # hours*rate. A correct invoice must therefore show zero drift —
-                # the old per-session rounding fabricated sub-cent discrepancies.
-                client_row = {"name": inv_row["client_name"]}
-                line_items = _reconstruct_csv_line_items(conn, inv_row, client_row)
-                computed = to_money(sum(
-                    (to_money(str(li["amount"])) for li in line_items),
-                    Decimal("0.00"),
-                ))
-                stored = to_money(str(inv_row["total"]))
-                if abs(computed - stored) > Decimal("0.01"):
-                    result.total_drift.append(
-                        f"{number}: stored ${stored:,.2f} vs session-sum ${computed:,.2f}"
-                    )
-            except Exception:
-                # Drift detection is best-effort reporting only; never let it
-                # abort the (more important) missing-row/status-sync repair.
-                pass
-
-    if not apply or (not missing_rows and not status_behind_rows):
-        result.appended = [str(r["invoice_number"]) for r in missing_rows]
-        result.status_synced = [str(r["invoice_number"]) for r in status_behind_rows]
-        return result
-
-    # ---- Apply: append missing rows, patch status-behind rows ----
-    for inv_row in missing_rows:
-        try:
-            client_row = {"name": inv_row["client_name"]}
-            line_items = _reconstruct_csv_line_items(conn, inv_row, client_row)
-            inv_mod.save_to_csv(
-                str(inv_row["invoice_number"]),
-                inv_row["invoice_date"],
-                config,
-                line_items,
-                total=str(inv_row["total"]),
-                pdf_file=(inv_row["pdf_path"] or ""),
-                client=client_row,
-                status=inv_row["status"],
-            )
-            result.appended.append(str(inv_row["invoice_number"]))
-        except Exception as e:
-            result.warning = f"reconcile: could not append {inv_row['invoice_number']} to the CSV ({e})"
-
-    if status_behind_rows:
-        try:
-            with inv_mod._file_lock(csv_path):
-                rows, headers = inv_mod._read_csv_with_headers(csv_path)
-                inv_key = inv_mod._csv_field_key(headers, "invoice_number") or "invoice_number"
-                status_key = inv_mod._csv_field_key(headers, "status") or "status"
-                numbers_to_patch = {str(r["invoice_number"]) for r in status_behind_rows}
-                patched_any = False
-                for r in rows:
-                    if r.get(inv_key) in numbers_to_patch:
-                        r[status_key] = "Paid"
-                        patched_any = True
-                if patched_any:
-                    _backup_file(csv_path)
-                    inv_mod._atomic_write_csv(csv_path, rows, headers)
-                    result.status_synced = sorted(numbers_to_patch)
-        except Exception as e:
-            result.warning = f"reconcile: could not sync Paid status to the CSV ({e})"
-
-    return result
 
 
 def _auto_converge(conn):
@@ -1335,30 +759,6 @@ def cmd_status():
                     f"  {inv['invoice_number']:<14} {inv['name']:<22} ${inv['total']:>8,.2f}  due {due}"
                 )
         click.echo()
-
-
-def _due_date_str(invoice_date_str, terms_days=30):
-    d = date.fromisoformat(invoice_date_str)
-    due = d + timedelta(days=terms_days)
-    return due.strftime("%b %-d")
-
-
-def _month_bounds(month_value):
-    """Return inclusive start and exclusive end ISO dates for YYYY-MM."""
-    if not month_value or len(month_value) != 7 or month_value[4] != "-":
-        raise click.ClickException("Month must be YYYY-MM format.")
-    try:
-        year = int(month_value[:4])
-        month = int(month_value[5:])
-        start = date(year, month, 1)
-    except ValueError as exc:
-        raise click.ClickException("Month must be YYYY-MM format.") from exc
-
-    if month == 12:
-        end = date(year + 1, 1, 1)
-    else:
-        end = date(year, month + 1, 1)
-    return start.isoformat(), end.isoformat()
 
 
 @cli.command("sessions")
