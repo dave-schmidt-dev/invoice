@@ -364,6 +364,22 @@ secrets store is deferred to the next storage migration. Until then, protect
 `~/.invoice_config.json` like any other credential file — do not copy it into
 the repo, a backup that syncs to a shared location, or a paste buffer.
 
+### Code layout
+
+- `zd.py`: Zero Delta time tracker and invoice bridge.
+- `invoice.py`: Invoice generator CLI tool.
+- `zd_store.py`: Backups, schema constants, money and calendar helpers for zd.
+- `zd_summary.py`: Local weekly-summary configuration, text cleanup and week grouping for zd.
+- `zd_reconcile.py`: Converge the invoice.py CSV ledger to the authoritative zd DB.
+- `zd_cmd_records.py`: zd commands for clients, sessions and expenses.
+- `zd_cmd_ledger.py`: zd commands for reconcile, status, paid, backfill and shell completion.
+- `zd_cmd_invoice.py`: The zd invoice command.
+- `invoice_ledger.py`: CSV ledger, file locking, atomic writes and invoice-number helpers for invoice.py.
+- `invoice_input.py`: Money parsing, interactive input and file-opening helpers for invoice.py.
+- `invoice_pdf.py`: PDF layout and rendering for invoice.py.
+
+zd command modules look zd names up at call time so tests can patch `zd` attributes.
+
 ### No PII in the project
 
 **Hard rule: no personally identifiable information or real-world client data
