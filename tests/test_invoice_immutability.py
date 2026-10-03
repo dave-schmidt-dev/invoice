@@ -31,6 +31,8 @@ with input="y\n" to answer the "Proceed?" confirmation. No real user files are
 ever touched.
 """
 
+import tests  # noqa: F401 - HOME/log isolation guard (see tests/__init__.py)
+
 import csv as _csv
 import json
 import os

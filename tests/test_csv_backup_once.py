@@ -7,6 +7,8 @@ ledger through ``zd._backup_file`` (``zd paid``) copied it twice. Both now use
 the single ``invoice_ledger._backup_file``.
 """
 
+import tests  # noqa: F401 - HOME/log isolation guard (see tests/__init__.py)
+
 import csv
 import json
 import os

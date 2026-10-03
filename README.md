@@ -456,11 +456,11 @@ If the virtualenv is already active:
 python -m unittest discover -v
 ```
 
-Run the suite from the repo root (bare `discover`, not `discover -s tests`) so
-`tests/__init__.py` runs and redirects the CLIs' log files into a throwaway
-temp directory instead of the real `/tmp/zd.log` and `/tmp/invoice.log`. To get
-the same isolation under any other runner, set the `ZD_LOG_FILE` and
-`INVOICE_LOG_FILE` environment variables explicitly.
+`tests/__init__.py` redirects HOME and the CLIs' log files into throwaway temp
+directories, so the suite never touches the real `~/.zd.db`, config, ledger or
+operational logs. Every test module starts with `import tests`, so the redirect
+also runs under `discover -s tests` or any other runner;
+`tests/test_test_isolation.py` fails if a test module drops that import.
 
 ## License
 

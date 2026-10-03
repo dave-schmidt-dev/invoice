@@ -19,6 +19,8 @@ guards on zd log/expense/edit/edit-expense must explicitly reject non-finite
 values with math.isfinite() BEFORE any DB write — otherwise a non-finite
 hours/amount could reach INSERT/UPDATE and poison a total.
 """
+import tests  # noqa: F401 - HOME/log isolation guard (see tests/__init__.py)
+
 import csv as _csv
 import json
 import os

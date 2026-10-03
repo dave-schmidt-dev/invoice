@@ -5,6 +5,8 @@ rewrites the whole ledger via an atomic os.replace so a crash mid-write can
 never leave a torn/partial row. Other write-safety tasks add cases here.
 """
 
+import tests  # noqa: F401 - HOME/log isolation guard (see tests/__init__.py)
+
 import csv
 import json
 import os

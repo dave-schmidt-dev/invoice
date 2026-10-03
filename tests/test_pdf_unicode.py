@@ -16,6 +16,8 @@ These tests exercise the real `generate_pdf` call path and never touch real
 files (everything lives under a TemporaryDirectory).
 """
 
+import tests  # noqa: F401 - HOME/log isolation guard (see tests/__init__.py)
+
 import io
 import tempfile
 import unittest

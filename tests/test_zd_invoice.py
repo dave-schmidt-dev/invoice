@@ -1,3 +1,5 @@
+import tests  # noqa: F401 - HOME/log isolation guard (see tests/__init__.py)
+
 import contextlib
 import json
 import logging

@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/
 
 ### Fixed
 
+- The test suite redirects HOME and its log files under `python -m unittest discover -s tests` too, not only under bare `discover`, so no runner can point the tests at the real `~/.zd.db`, config or ledger.
 - One `zd` run no longer backs up the ledger CSV twice (for example when auto-convergence appends a missing row and `zd paid` then patches it), so it stops using up the last-20 backup window. `_backup_file`, its constants and the config path are now defined once in `invoice_ledger.py`.
 - `invoice.py status` no longer changes the status of an invoice that is tracked in the
   authoritative zd database. It now exits non-zero without writing anything and tells you to

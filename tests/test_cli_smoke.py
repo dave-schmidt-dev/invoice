@@ -9,6 +9,8 @@ file adds one hermetic, passing integration test per command against a temp
 SQLite DB (never the real ~/.zd.db).
 """
 
+import tests  # noqa: F401 - HOME/log isolation guard (see tests/__init__.py)
+
 import json
 import os
 import tempfile

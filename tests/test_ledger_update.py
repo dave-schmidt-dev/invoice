@@ -5,6 +5,8 @@ Every ledger row patch (invoice.py status, zd paid, zd reconcile, zd invoice
 atomic, legacy-header aware. These tests drive it against temp files only.
 """
 
+import tests  # noqa: F401 - HOME/log isolation guard (see tests/__init__.py)
+
 import csv
 import tempfile
 import unittest

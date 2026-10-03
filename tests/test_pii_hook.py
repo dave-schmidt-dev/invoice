@@ -10,6 +10,8 @@ Every fixture pattern planted in a test's own `pii-patterns.txt` is a
 synthetic, made-up token (e.g. ``zzsecrettoken``) — never real client data.
 """
 
+import tests  # noqa: F401 - HOME/log isolation guard (see tests/__init__.py)
+
 import os
 import shutil
 import subprocess

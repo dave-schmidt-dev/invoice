@@ -1,5 +1,7 @@
 """Subprocess smoke tests for the repository script entry points."""
 
+import tests  # noqa: F401 - HOME/log isolation guard (see tests/__init__.py)
+
 import os
 import subprocess
 import sys

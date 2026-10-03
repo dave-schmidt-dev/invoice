@@ -14,6 +14,8 @@ These tests drive the interactive `invoice.py new` command through CliRunner
 against a temp ledger + invoices dir. They NEVER touch real files.
 """
 
+import tests  # noqa: F401 - HOME/log isolation guard (see tests/__init__.py)
+
 import csv
 import tempfile
 import unittest

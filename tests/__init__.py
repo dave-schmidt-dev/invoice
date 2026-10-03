@@ -7,13 +7,13 @@ this module points them at a throwaway temp directory before any
 ``tests.test_*`` module runs ``import zd`` / ``import invoice``. That keeps the
 suite from appending test noise to a developer's real operational log.
 
-IMPORTANT — how this gets run: ``python -m unittest discover`` (from the repo
-root) treats ``tests/`` as a package and executes this ``__init__`` first, so
-the redirect is in place. ``discover -s tests`` does NOT import the package
-``__init__`` (a documented unittest quirk), so run the suite from the repo root
-(bare ``discover``). Under any other runner, set ``ZD_LOG_FILE`` /
-``INVOICE_LOG_FILE`` explicitly to get the same isolation. ``setdefault`` below
-leaves any such explicit override in place.
+How this always runs: bare ``python -m unittest discover`` (from the repo
+root) imports this package ``__init__`` first. ``discover -s tests`` does NOT
+(it makes ``tests/`` the top-level directory), so every ``tests/test_*.py``
+module also starts with ``import tests`` before any project import; that runs
+this guard under any runner. ``tests/test_test_isolation.py`` enforces the
+import order. ``setdefault`` below leaves an explicit ``ZD_LOG_FILE`` /
+``INVOICE_LOG_FILE`` override in place.
 
 ``zd`` and ``invoice`` compute ``~/.zd.db`` and ``~/.invoice_config.json``
 from ``Path.home()`` at import time. Redirecting HOME here keeps imports from

@@ -1,5 +1,7 @@
 """Regression tests for HOME-derived invoice defaults."""
 
+import tests  # noqa: F401 - HOME/log isolation guard (see tests/__init__.py)
+
 import importlib.util
 import os
 import tempfile
