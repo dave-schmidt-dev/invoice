@@ -201,12 +201,14 @@ def _atomic_write_csv(path, rows, fieldnames, default_mode=0o600):
         with tempfile.NamedTemporaryFile(
             "w", newline="", delete=False, dir=path.parent, encoding="utf-8"
         ) as tmp:
+            # Record the path first so the finally clause removes the temp
+            # file even when writing the rows raises.
+            tmp_path = Path(tmp.name)
             writer = csv.DictWriter(tmp, fieldnames=fieldnames)
             writer.writeheader()
             writer.writerows(rows)
             tmp.flush()
             os.fsync(tmp.fileno())
-            tmp_path = Path(tmp.name)
         if hasattr(os, "chmod"):
             os.chmod(tmp_path, mode)
         os.replace(tmp_path, path)

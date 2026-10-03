@@ -125,6 +125,27 @@ class WriteSafetyTests(unittest.TestCase):
             ]
             self.assertEqual(leftover, [], f"unexpected leftover files: {leftover}")
 
+    def test_atomic_write_failure_while_writing_rows_leaves_no_temp_file(self):
+        """A row the DictWriter rejects (a field not in fieldnames, as on a
+        ledger without a status column) raised before the temp path was
+        recorded, so the half-written temp file stayed in the ledger dir."""
+        from invoice_ledger import _atomic_write_csv
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ledger = Path(tmpdir) / "invoices.csv"
+            ledger.write_text("invoice_number,total\r\n2026-0001,200.00\r\n", encoding="utf-8")
+            original_bytes = ledger.read_bytes()
+
+            with self.assertRaises(ValueError):
+                _atomic_write_csv(
+                    ledger,
+                    [{"invoice_number": "2026-0001", "total": "200.00", "status": "Paid"}],
+                    ["invoice_number", "total"],
+                )
+
+            self.assertEqual(ledger.read_bytes(), original_bytes)
+            self.assertEqual([p.name for p in Path(tmpdir).iterdir()], [ledger.name])
+
     def test_zero_hours_zero_rate_line_item_omits_hours_rate_suffix(self):
         """A flat-rate line item (hours == 0 and rate == 0) is written with a
         clean description and NO '(0 hrs @ $0.00/hr)' suffix."""
