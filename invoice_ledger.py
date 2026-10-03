@@ -254,3 +254,53 @@ def zd_db_tracks_invoice(db_path, invoice_number):
     finally:
         conn.close()
     return row is not None
+
+
+def update_ledger_rows(csv_path, updates, *, backup=None, first_match_only=True,
+                       add_missing_columns=False, write_unmatched=False):
+    """Patch ledger rows in place: lock, read, resolve headers, patch, back up, atomic write.
+
+    ``updates`` maps an invoice number to ``{canonical_header: value}``. Each
+    canonical header is resolved against the file's actual (possibly legacy)
+    headers with ``_csv_field_key``. Returns the set of invoice numbers that
+    matched a row; the file is only rewritten when at least one matched.
+
+    ``backup`` is a callable ``backup(csv_path)`` run just before the rewrite
+    (INV-6), passed in so the caller's own once-per-run backup bookkeeping is
+    used. ``first_match_only`` patches only the first row per number.
+    ``add_missing_columns`` appends a header that the file lacks (legacy ledger
+    without a ``status`` column); otherwise an unknown header makes the strict
+    ``_atomic_write_csv`` raise. ``write_unmatched`` keeps the regenerate
+    behavior of backing up (before the read) and rewriting even when nothing
+    matched. I/O errors propagate; callers own their failure messages.
+    """
+    csv_path = Path(csv_path)
+    matched = set()
+    with _file_lock(csv_path):
+        if backup is not None and write_unmatched:
+            backup(csv_path)
+        rows, file_headers = _read_csv_with_headers(csv_path)
+        inv_key = _csv_field_key(file_headers, "invoice_number") or "invoice_number"
+        wanted = {name for fields in updates.values() for name in fields}
+        keys = {}
+        for name in wanted:
+            key = _csv_field_key(file_headers, name)
+            if key is None:
+                key = name
+                if add_missing_columns:
+                    file_headers = list(file_headers) + [key]
+            keys[name] = key
+
+        for row in rows:
+            number = row.get(inv_key)
+            if number not in updates or (first_match_only and number in matched):
+                continue
+            for name, value in updates[number].items():
+                row[keys[name]] = value
+            matched.add(number)
+
+        if matched or write_unmatched:
+            if backup is not None and not write_unmatched:
+                backup(csv_path)
+            _atomic_write_csv(csv_path, rows, file_headers)
+    return matched
