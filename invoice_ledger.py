@@ -281,7 +281,7 @@ def update_ledger_rows(csv_path, updates, *, backup=None, first_match_only=True,
             backup(csv_path)
         rows, file_headers = _read_csv_with_headers(csv_path)
         inv_key = _csv_field_key(file_headers, "invoice_number") or "invoice_number"
-        wanted = {name for fields in updates.values() for name in fields}
+        wanted = dict.fromkeys(name for fields in updates.values() for name in fields)
         keys = {}
         for name in wanted:
             key = _csv_field_key(file_headers, name)
