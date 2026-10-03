@@ -30,7 +30,7 @@ Run this project through `./invoice-wrapper` or the project virtual environment.
 - Reconcile the CSV ledger back to the authoritative DB (`zd reconcile [--fix]`)
 - Auto-sync new clients to `~/.invoice_config.json` for invoice generation
 - Automatic timestamped backups of DB, config, and CSV before writes (last 20 kept)
-- Rotating debug logs on demand (`--debug`, written to `/tmp/zd.log`)
+- Rotating debug logs on demand (`--debug`, written to `.logs/zd.log`)
 - Portable wrappers: both `invoice-wrapper` and `zd-wrapper` resolve symlinks for cross-computer compatibility
 
 ## Requirements
@@ -242,9 +242,10 @@ removes or rewrites an existing ledger row, so it cannot double-bill.
 
 ### Debug logging
 
-Both CLIs log at `WARNING` and above to `/tmp/zd.log` and `/tmp/invoice.log`
-(rotating, 1 MB × 2 backups, created `0600`). Pass `--debug` to either tool to
-drop the threshold to `DEBUG` for that run. Logs are written to be free of
+Both CLIs log at `WARNING` and above to the project's gitignored `.logs/zd.log`
+and `.logs/invoice.log` (rotating, 1 MB × 2 backups, created `0600`; `.logs/` is
+created owner-only on first use). Pass `--debug` to either tool to drop the
+threshold to `DEBUG` for that run. Logs are written to be free of
 client identities, notes, amounts, and invoice numbers. Override the log path
 with the `ZD_LOG_FILE` / `INVOICE_LOG_FILE` environment variables.
 

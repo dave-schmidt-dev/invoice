@@ -21,7 +21,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import click
-from cli_logging import configure_file_logger
+from cli_logging import configure_file_logger, default_log_file
 from invoice_ledger import (  # noqa: E402,F401 - moved to invoice_ledger.py
     CSV_HEADERS, _sanitize_filename_component, _validate_invoice_number, _csv_safe,
     _file_lock, _atomic_write_json, _read_csv_with_headers, _csv_field_key,
@@ -37,7 +37,7 @@ from invoice_pdf import (  # noqa: E402,F401 - moved to invoice_pdf.py
     _split_address_lines, _latin1_safe, _InvoicePDF, _multi_cell_height, generate_pdf,
 )
 
-LOG_FILE = os.environ.get("INVOICE_LOG_FILE", "/tmp/invoice.log")
+LOG_FILE = os.environ.get("INVOICE_LOG_FILE", default_log_file("invoice"))
 
 
 def _setup_logging(debug: bool):

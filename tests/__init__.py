@@ -1,8 +1,9 @@
 """Test package initializer — redirects the CLIs' log files during tests.
 
-In production the CLIs log to ``/tmp/zd.log`` / ``/tmp/invoice.log`` (INV-1
-owner-only files). ``zd.LOG_FILE`` / ``invoice.LOG_FILE`` resolve those paths
-from the ``ZD_LOG_FILE`` / ``INVOICE_LOG_FILE`` env vars at import time, so
+In production the CLIs log to the project's gitignored ``.logs/zd.log`` /
+``.logs/invoice.log`` (INV-1 owner-only files). ``zd.LOG_FILE`` /
+``invoice.LOG_FILE`` resolve those paths from the ``ZD_LOG_FILE`` /
+``INVOICE_LOG_FILE`` env vars at import time, so
 this module points them at a throwaway temp directory before any
 ``tests.test_*`` module runs ``import zd`` / ``import invoice``. That keeps the
 suite from appending test noise to a developer's real operational log.

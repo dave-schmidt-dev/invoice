@@ -32,7 +32,7 @@ from pathlib import Path
 
 import click
 from click.shell_completion import CompletionItem
-from cli_logging import configure_file_logger
+from cli_logging import configure_file_logger, default_log_file
 from invoice_ledger import default_config_file  # noqa: E402
 from zd_store import (  # noqa: E402,F401 - moved to zd_store.py
     _MAX_BACKUPS, _backed_up_this_run, _backup_file, _backup_db, _SCHEMA_VERSION,
@@ -48,7 +48,7 @@ from zd_reconcile import (  # noqa: E402,F401 - moved to zd_reconcile.py
     _converge_db_to_csv, _load_invoice,
 )
 
-LOG_FILE = os.environ.get("ZD_LOG_FILE", "/tmp/zd.log")
+LOG_FILE = os.environ.get("ZD_LOG_FILE", default_log_file("zd"))
 
 
 def _setup_logging(debug: bool):

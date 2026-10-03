@@ -58,6 +58,7 @@ coverage.xml
 .pytest_cache/
 htmlcov/
 *.log
+.logs/
 
 # Invoice/time-tracker data files (contain personal/financial information)
 invoice_config.json
