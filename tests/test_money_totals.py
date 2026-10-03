@@ -21,7 +21,6 @@ hours/amount could reach INSERT/UPDATE and poison a total.
 """
 import csv as _csv
 import json
-import math
 import os
 import re
 import tempfile

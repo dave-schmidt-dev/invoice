@@ -15,6 +15,26 @@ set -euo pipefail
 repo_root="$(git rev-parse --show-toplevel)"
 patterns="$repo_root/hooks/pii-patterns.txt"
 
+# Lint step: unused imports in staged Python files (ruff F401, honoring
+# `# noqa`) so the re-export residue removed from invoice.py / zd.py cannot
+# regrow. Kept to the one rule; it runs in well under a second. A machine
+# without ruff skips it with a notice rather than blocking the commit.
+staged_py=()
+while IFS= read -r staged_file; do
+    staged_py+=("$staged_file")
+done < <(git diff --cached --name-only --diff-filter=ACM -- '*.py')
+if (( ${#staged_py[@]} > 0 )); then
+    if command -v ruff >/dev/null 2>&1; then
+        if ! (cd "$repo_root" && ruff check --select F401 --no-cache "${staged_py[@]}"); then
+            echo "[pre-commit] BLOCKED: unused imports in staged Python files (ruff F401)." >&2
+            echo "[pre-commit] Remove them, or mark an intentional re-export with '# noqa: F401 - <who uses it>'." >&2
+            exit 1
+        fi
+    else
+        echo "[pre-commit] notice: ruff not found; skipping the unused-import check." >&2
+    fi
+fi
+
 if [[ ! -f "$patterns" ]]; then
     echo "[pre-commit] BLOCKED: pattern file missing: $patterns" >&2
     echo "[pre-commit] Cannot verify staged content is free of PII without it." >&2

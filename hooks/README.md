@@ -30,6 +30,10 @@ Scans the staged diff for patterns from `pii-patterns.txt`. The check looks
 only at ADDED lines (`^\+[^+]`), so removing forbidden content does not
 trigger the guard. Typical runtime is well under a second.
 
+It also runs `ruff check --select F401` on staged `*.py` files, so unused imports
+(including leftover re-exports) cannot regrow. An intentional re-export carries
+`# noqa: F401 - <who uses it>`. Without `ruff` on PATH the step is skipped with a notice.
+
 If the hook blocks, **fix the staged content**. Do NOT use `--no-verify`
 as a workaround — the entire point of the guard is to keep PII out of
 commit history, and bypassing it defeats that purpose.

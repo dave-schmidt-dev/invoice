@@ -204,6 +204,41 @@ class TestCleanDiffPasses(PiiHookTestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
 
 
+class TestUnusedImportLint(PiiHookTestCase):
+    """The hook also blocks unused imports (ruff F401) in staged .py files."""
+
+    def setUp(self):
+        super().setUp()
+        if shutil.which("ruff") is None:
+            self.skipTest("ruff is not available on PATH")
+        self._write_patterns("zzsecrettoken\n")
+
+    def test_unused_import_blocks_commit(self):
+        self._write_file("mod.py", "import os\n")
+        self._stage("hooks/pii-patterns.txt", "mod.py")
+
+        result = self._commit("add module with an unused import")
+
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertIn("unused imports", result.stderr)
+
+    def test_noqa_marked_reexport_passes(self):
+        self._write_file("mod.py", "import os  # noqa: F401 - consumers patch mod.os\n")
+        self._stage("hooks/pii-patterns.txt", "mod.py")
+
+        result = self._commit("add module with an intentional re-export")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_used_import_passes(self):
+        self._write_file("mod.py", "import os\nprint(os.name)\n")
+        self._stage("hooks/pii-patterns.txt", "mod.py")
+
+        result = self._commit("add module using its import")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+
 class TestDoublePlusPrefixEdgeCase(PiiHookTestCase):
     """Case 8 (documented known limitation): content that itself begins
     with '++' collides with the diff's own '+++ b/<path>' file header.

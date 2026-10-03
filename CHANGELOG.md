@@ -6,6 +6,10 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/
 
 ## [Unreleased]
 
+### Added
+
+- The pre-commit hook also runs `ruff check --select F401` on staged Python files so unused imports and stale re-exports cannot regrow (skipped with a notice when ruff is not installed).
+
 ### Changed
 
 - Removed unused re-exports and imports left behind by the module split from `invoice.py` and `zd.py`; `invoice.py` is back under 800 lines. No behavior change.
