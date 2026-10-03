@@ -1,4 +1,5 @@
 import csv
+import gc
 import json
 import logging
 import tempfile
@@ -399,6 +400,10 @@ class StatusZdTrackedTests(unittest.TestCase):
                         " VALUES (?, 1, '2026-03-14', 200, 'Sent')",
                         (self.NUMBER,),
                     )
+        # zd.get_conn() connections are not closed by their `with` block; collect
+        # them so the WAL is checkpointed now. Otherwise a later GC pass rewrites
+        # the DB file and the byte-for-byte "refusal wrote nothing" check flakes.
+        gc.collect()
 
     def _run_status(self, tmpdir, ledger, db_path, new_status="Paid"):
         config = {"storage": {"ledger_file": str(ledger), "invoices_dir": tmpdir}}
