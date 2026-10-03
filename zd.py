@@ -51,7 +51,7 @@ from zd_summary import (  # noqa: E402,F401 - moved to zd_summary.py
 )
 from zd_reconcile import (  # noqa: E402,F401 - moved to zd_reconcile.py
     _SCRIPT_DIR, INVOICE_PY, _ReconcileResult, _reconstruct_csv_line_items,
-    _converge_db_to_csv,
+    _converge_db_to_csv, _load_invoice,
 )
 
 LOG_FILE = os.environ.get("ZD_LOG_FILE", "/tmp/zd.log")
@@ -290,10 +290,7 @@ def _sync_client_to_config(name):
     a hash of the target path, so both callers land on the same lock).
     """
     import json
-    import importlib.util
-    spec = importlib.util.spec_from_file_location("invoice", INVOICE_PY)
-    inv_mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(inv_mod)
+    inv_mod = _load_invoice()
 
     with inv_mod._file_lock(CONFIG_FILE):
         if CONFIG_FILE.exists():

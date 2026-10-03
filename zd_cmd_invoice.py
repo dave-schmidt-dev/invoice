@@ -109,10 +109,7 @@ def cmd_invoice(client, invoice_date, invoice_month, summarize_weeks, flat_amoun
 
     # --- Load invoice.py config and machinery ---
     try:
-        import importlib.util
-        spec = importlib.util.spec_from_file_location("invoice", zd.INVOICE_PY)
-        inv_mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(inv_mod)
+        inv_mod = zd._load_invoice()
     except Exception as e:
         raise click.ClickException(f"Could not load invoice.py: {e}")
 

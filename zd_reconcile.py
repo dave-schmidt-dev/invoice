@@ -14,6 +14,21 @@ _SCRIPT_DIR = Path(__file__).resolve().parent
 INVOICE_PY = _SCRIPT_DIR / "invoice.py"
 
 
+def _load_invoice():
+    """Execute invoice.py fresh and return the module.
+
+    Loaded anew on every call so its HOME-derived defaults are current
+    (tests/test_invoice_fresh_load.py). The module is built through
+    ``importlib.util.spec_from_file_location`` looked up at call time, which
+    the INV-2 race-loader test hooks.
+    """
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("invoice", INVOICE_PY)
+    inv_mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(inv_mod)
+    return inv_mod
+
+
 class _ReconcileResult:
     """Summary of a single _converge_db_to_csv pass.
 
@@ -115,10 +130,7 @@ def _converge_db_to_csv(conn, *, apply, report=True, echo_prefix=""):
     """
     result = _ReconcileResult()
     try:
-        import importlib.util
-        spec = importlib.util.spec_from_file_location("invoice", INVOICE_PY)
-        inv_mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(inv_mod)
+        inv_mod = _load_invoice()
         config = inv_mod.load_config()
         csv_path = Path(inv_mod._ledger_path_from_config(config))
     except Exception as e:

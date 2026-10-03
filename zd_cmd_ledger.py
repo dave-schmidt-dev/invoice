@@ -189,10 +189,7 @@ def cmd_paid(invoice_number, paid_date_arg):
 
     # Also update invoice.py's CSV ledger
     try:
-        import importlib.util
-        spec = importlib.util.spec_from_file_location("invoice", zd.INVOICE_PY)
-        inv_mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(inv_mod)
+        inv_mod = zd._load_invoice()
         config = inv_mod.load_config()
         csv_file = str(inv_mod._ledger_path_from_config(config))
 
