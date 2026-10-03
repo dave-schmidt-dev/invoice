@@ -33,6 +33,7 @@ from pathlib import Path
 import click
 from click.shell_completion import CompletionItem
 from cli_logging import configure_file_logger
+from invoice_ledger import default_config_file  # noqa: E402
 from zd_store import (  # noqa: E402,F401 - moved to zd_store.py
     _MAX_BACKUPS, _backed_up_this_run, _backup_file, _backup_db, _SCHEMA_VERSION,
     _MIGRATIONS, _column_exists, to_money, get_client, week_label, week_key,
@@ -65,7 +66,7 @@ def _setup_logging(debug: bool):
 ZD_DB = Path.home() / ".zd.db"
 
 
-CONFIG_FILE = Path.home() / ".invoice_config.json"
+CONFIG_FILE = default_config_file()
 
 
 # ---------------------------------------------------------------------------

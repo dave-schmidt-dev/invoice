@@ -5,12 +5,52 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import sqlite3
 import tempfile
 from contextlib import contextmanager
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 import click
+
+
+def default_config_file():
+    """Path of the shared config file, derived from the current HOME.
+
+    A function (not a constant) so invoice.py's fresh-load keeps its
+    HOME-derived default (tests/test_invoice_fresh_load.py).
+    """
+    return Path.home() / ".invoice_config.json"
+
+
+_MAX_BACKUPS = 20
+
+
+_backed_up_this_run: set[str] = set()
+
+
+def _backup_file(path):
+    """Create a timestamped backup of path if it exists. Once per path per run.
+
+    Used for CSV/config backups (plain file copy). DB backups go through
+    zd_store._backup_db instead, which uses SQLite's online-backup API so a
+    live WAL-mode DB is never copied mid-write.
+
+    Defined here, in a normally imported (cached) module, so zd and the
+    fresh-loaded invoice.py share one once-per-run memory."""
+    path = Path(path)
+    key = str(path)
+    if key in _backed_up_this_run or not path.exists():
+        return
+    _backed_up_this_run.add(key)
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    backup = path.with_suffix(f"{path.suffix}.{ts}.bak")
+    shutil.copy2(path, backup)
+    # Prune old backups, keep last _MAX_BACKUPS
+    pattern = f"{path.name}.*.bak"
+    backups = sorted(path.parent.glob(pattern))
+    for old in backups[:-_MAX_BACKUPS]:
+        old.unlink(missing_ok=True)
 
 
 CSV_FORMULA_PREFIXES = ("=", "+", "-", "@")

@@ -1,38 +1,11 @@
 """Backups, schema constants, money and calendar helpers for zd (moved verbatim from zd.py)."""
 
-import shutil
 import sqlite3
 from datetime import date, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 import click
-
-
-_MAX_BACKUPS = 20
-
-
-_backed_up_this_run: set[str] = set()
-
-
-def _backup_file(path):
-    """Create a timestamped backup of path if it exists. Once per path per run.
-
-    Used for CSV/config backups (plain file copy). DB backups go through
-    _backup_db instead, which uses SQLite's online-backup API so a live
-    WAL-mode DB is never copied mid-write (see _backup_db)."""
-    path = Path(path)
-    key = str(path)
-    if key in _backed_up_this_run or not path.exists():
-        return
-    _backed_up_this_run.add(key)
-    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-    backup = path.with_suffix(f"{path.suffix}.{ts}.bak")
-    shutil.copy2(path, backup)
-    # Prune old backups, keep last _MAX_BACKUPS
-    pattern = f"{path.name}.*.bak"
-    backups = sorted(path.parent.glob(pattern))
-    for old in backups[:-_MAX_BACKUPS]:
-        old.unlink(missing_ok=True)
+from invoice_ledger import _MAX_BACKUPS, _backed_up_this_run, _backup_file  # noqa: F401 - _backup_file re-exported for zd
 
 
 def _backup_db(conn, db_path):

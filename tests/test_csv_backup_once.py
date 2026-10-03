@@ -1,9 +1,10 @@
-"""INV-6: how many times does one `zd` run back up the same ledger CSV?
+"""INV-6: one `zd` run backs up the same ledger CSV once.
 
-invoice.py is fresh-loaded on every use, so its own once-per-run memory resets
-each time, while zd's persists. A run that appends a missing row through the
-fresh-loaded ``invoice.save_to_csv`` (convergence) and then patches the same
-ledger through ``zd._backup_file`` (``zd paid``) therefore copies it twice.
+invoice.py is fresh-loaded on every use. Its once-per-run memory used to be
+re-created on each load while zd's persisted, so a run that appended a missing
+row through ``invoice.save_to_csv`` (convergence) and then patched the same
+ledger through ``zd._backup_file`` (``zd paid``) copied it twice. Both now use
+the single ``invoice_ledger._backup_file``.
 """
 
 import csv
@@ -60,8 +61,8 @@ class CsvBackupCountTests(unittest.TestCase):
         zd._backed_up_this_run.clear()
         return csv_path
 
-    def test_paid_run_that_also_converges_backs_up_the_csv_twice(self):
-        """Documents current behavior (the suspected double backup is real)."""
+    def test_paid_run_that_also_converges_backs_up_the_csv_once(self):
+        """Convergence append + paid patch in one run share one backup."""
         with tempfile.TemporaryDirectory() as tmpdir:
             csv_path = self._sandbox(tmpdir)
             real_copy2 = shutil.copy2
@@ -80,8 +81,8 @@ class CsvBackupCountTests(unittest.TestCase):
                 rows = {r["invoice_number"]: r["status"] for r in csv.DictReader(f)}
             self.assertEqual(rows.get("2026-0001"), "Paid", msg=result.output)
             # Convergence appended the row via the fresh-loaded invoice module,
-            # then cmd_paid patched it via zd._backup_file: two copies.
-            self.assertEqual(len(csv_copies), 2, msg=result.output)
+            # then cmd_paid patched it via zd._backup_file: one shared copy.
+            self.assertEqual(len(csv_copies), 1, msg=result.output)
 
 
 if __name__ == "__main__":

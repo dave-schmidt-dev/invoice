@@ -15,9 +15,8 @@ import copy
 import json
 import logging
 import os
-import shutil
 import sqlite3
-from datetime import date, datetime
+from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
@@ -27,7 +26,8 @@ from invoice_ledger import (  # noqa: E402,F401 - moved to invoice_ledger.py
     CSV_HEADERS, _sanitize_filename_component, _validate_invoice_number, _csv_safe,
     _file_lock, _atomic_write_json, _read_csv_with_headers, _csv_field_key,
     _atomic_write_csv, get_next_invoice_number, _invoice_number_exists,
-    zd_db_tracks_invoice, update_ledger_rows,
+    zd_db_tracks_invoice, update_ledger_rows, default_config_file,
+    _MAX_BACKUPS, _backed_up_this_run, _backup_file,
 )
 from invoice_input import (  # noqa: E402,F401 - moved to invoice_input.py
     _VALID_LOGO_EXTS, PAYMENT_TERMS_CHOICES, _DEFAULT_CLIENT, _to_money_decimal, _open_path,
@@ -48,31 +48,10 @@ def _setup_logging(debug: bool):
     return configure_file_logger("invoice", LOG_FILE, debug)
 
 # ---------------------------------------------------------------------------
-# Backups — timestamped copies before any destructive write, keep last 20
+# Paths — _backup_file (timestamped copies, keep last 20) lives in invoice_ledger.py
 # ---------------------------------------------------------------------------
 
-_MAX_BACKUPS = 20
-_backed_up_this_run: set[str] = set()
-
-
-def _backup_file(path):
-    """Create a timestamped backup of path if it exists. Once per path per run."""
-    path = Path(path)
-    key = str(path)
-    if key in _backed_up_this_run or not path.exists():
-        return
-    _backed_up_this_run.add(key)
-    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-    backup = path.with_suffix(f"{path.suffix}.{ts}.bak")
-    shutil.copy2(path, backup)
-    # Prune old backups, keep last _MAX_BACKUPS
-    pattern = f"{path.name}.*.bak"
-    backups = sorted(path.parent.glob(pattern))
-    for old in backups[:-_MAX_BACKUPS]:
-        old.unlink(missing_ok=True)
-
-
-CONFIG_FILE = Path.home() / ".invoice_config.json"
+CONFIG_FILE = default_config_file()
 # Defaults used when no config exists yet; actual paths live inside the config.
 _DEFAULT_LEDGER = Path.home() / "invoices" / "invoices.csv"
 _DEFAULT_INVOICES_DIR = Path.home() / "invoices"
