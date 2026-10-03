@@ -12,6 +12,7 @@ Run this project through `./invoice-wrapper` or the project virtual environment.
 - Client profiles and reusable config in `~/.invoice_config.json`
 - Quick file shortcuts for opening the configured ledger and a specific invoice PDF
 - Invoice status tracking (`Draft`, `Sent`, `Paid`, `Overdue`)
+- `invoice.py status` only changes CSV-only (legacy) invoices; an invoice tracked in the zd DB is refused (exit non-zero, nothing written) because the DB is authoritative. Use `zd paid <N>` for those
 - Filtered listing (`invoice.py list --status sent`)
 - Safer file handling: atomic writes and lock-protected CSV updates
 - Money handling with `Decimal` for consistent currency math
@@ -100,6 +101,8 @@ python invoice.py ...
 ```bash
 ./invoice-wrapper status 2026-0001 Paid
 ```
+
+`status` edits the CSV ledger only, so it refuses any invoice number that exists in the zd database (`~/.zd.db`): it exits non-zero, writes nothing, and points you to `zd paid <N>`. Invoices that exist only in the CSV, or a machine with no zd database, behave as before. The zd database is opened read-only for this check; if it exists but cannot be read, the command fails closed rather than risk diverging the two records.
 
 ## Using `invoice-wrapper`
 
@@ -282,7 +285,7 @@ If `worklog_file` is unset, logging is silently skipped.
 ./invoice-wrapper config
 ./invoice-wrapper new [--date YYYY-MM-DD]
 ./invoice-wrapper list [--status all|draft|sent|paid|overdue]
-./invoice-wrapper status INVOICE_NUMBER {draft|sent|paid|overdue}
+./invoice-wrapper status INVOICE_NUMBER {draft|sent|paid|overdue}   # CSV-only invoices; zd-tracked ones: use `zd paid`
 ```
 
 Activated-venv equivalent:
@@ -374,7 +377,7 @@ the repo, a backup that syncs to a shared location, or a paste buffer.
 - `zd_cmd_records.py`: zd commands for clients, sessions and expenses.
 - `zd_cmd_ledger.py`: zd commands for reconcile, status, paid, backfill and shell completion.
 - `zd_cmd_invoice.py`: The zd invoice command.
-- `invoice_ledger.py`: CSV ledger, file locking, atomic writes and invoice-number helpers for invoice.py.
+- `invoice_ledger.py`: CSV ledger, file locking, atomic writes, invoice-number helpers and the read-only zd-DB lookup used by `invoice.py status`.
 - `invoice_input.py`: Money parsing, interactive input and file-opening helpers for invoice.py.
 - `invoice_pdf.py`: PDF layout and rendering for invoice.py.
 

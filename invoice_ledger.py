@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import re
+import sqlite3
 import tempfile
 from contextlib import contextmanager
 from datetime import date
@@ -225,3 +226,31 @@ def _invoice_number_exists(csv_file, invoice_number):
             if str(row.get(inv_key) or "").strip() == normalized_number:
                 return True
     return False
+
+
+def zd_db_tracks_invoice(db_path, invoice_number):
+    """Return True if the zd DB at db_path already holds invoice_number.
+
+    The zd SQLite DB is authoritative for zd-generated invoices (INV-2), so
+    invoice.py must not change their status behind its back. The DB is opened
+    read-only through a URI: no backup, migration, WAL change or file creation
+    can happen here. A missing DB file, or a DB with no `invoices` table yet,
+    means "not tracked". Any other SQLite failure propagates so the caller can
+    fail closed rather than diverge the two records.
+    """
+    db_path = Path(db_path)
+    if not db_path.exists():
+        return False
+    conn = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True)
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM invoices WHERE invoice_number = ? LIMIT 1",
+            (invoice_number,),
+        ).fetchone()
+    except sqlite3.OperationalError as exc:
+        if "no such table" in str(exc):
+            return False
+        raise
+    finally:
+        conn.close()
+    return row is not None

@@ -19,6 +19,7 @@ import logging
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -37,6 +38,7 @@ from invoice_ledger import (  # noqa: E402,F401 - moved to invoice_ledger.py
     _sanitize_filename_component, _validate_invoice_number, _csv_safe, _file_lock,
     _get_file_mode, _atomic_write_json, _read_csv_with_headers, _csv_field_key,
     _atomic_write_csv, get_next_invoice_number, _invoice_number_exists,
+    zd_db_tracks_invoice,
 )
 from invoice_input import (  # noqa: E402,F401 - moved to invoice_input.py
     _VALID_LOGO_EXTS, PAYMENT_TERMS_CHOICES, MONEY_PRECISION, _DEFAULT_CLIENT,
@@ -702,6 +704,15 @@ def cmd_new(invoice_date):
         click.echo("💡 Tip: Add client email in config to enable quick email sending")
 
 
+def _zd_db_path():
+    """Location of the zd SQLite DB (same default as zd.ZD_DB), resolved per call.
+
+    Deliberately not imported from zd.py: zd loads invoice.py fresh, so
+    importing zd back would create a cycle.
+    """
+    return Path.home() / ".zd.db"
+
+
 @cli.command("status")
 @click.argument("invoice_number")
 @click.argument("status", type=click.Choice(["Draft", "Sent", "Paid", "Overdue"], case_sensitive=False))
@@ -715,6 +726,31 @@ def cmd_status(invoice_number, status):
         return
     
     invoice_number = _validate_invoice_number(invoice_number)
+
+    # The zd DB is authoritative for zd-tracked invoices (INV-2). Changing
+    # only the CSV would leave `zd status` listing a "Paid" invoice as
+    # outstanding, so refuse before anything is written. CSV-only (legacy)
+    # invoices, and a machine with no zd DB, keep the plain CSV behavior.
+    try:
+        zd_tracked = zd_db_tracks_invoice(_zd_db_path(), invoice_number)
+    except sqlite3.Error as exc:
+        raise click.ClickException(
+            f"Could not check the zd database ({type(exc).__name__}); "
+            "refusing to change the status so the CSV cannot diverge from it."
+        )
+    if zd_tracked:
+        if status.lower() == "paid":
+            hint = f"Use `zd paid {invoice_number}` instead."
+        else:
+            hint = (
+                "The zd database is authoritative for this invoice and zd only "
+                f"supports `zd paid {invoice_number}`; no other status change "
+                "is available through invoice.py."
+            )
+        raise click.ClickException(
+            f"Invoice #{invoice_number} is tracked in the zd database, so "
+            f"invoice.py will not change its status. {hint} Nothing was written."
+        )
 
     with _file_lock(csv_file):
         rows, file_headers = _read_csv_with_headers(csv_file)

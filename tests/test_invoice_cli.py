@@ -360,5 +360,140 @@ class InvoiceLoggingTests(unittest.TestCase):
             self.assertEqual(mode, 0o600)
 
 
+class StatusZdTrackedTests(unittest.TestCase):
+    """`invoice.py status` must not diverge the CSV from the authoritative zd DB."""
+
+    NUMBER = "2026-0001"
+
+    def _write_ledger(self, tmpdir):
+        ledger = Path(tmpdir) / "invoices.csv"
+        with open(ledger, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=invoice.CSV_HEADERS)
+            writer.writeheader()
+            writer.writerow(
+                {
+                    "invoice_number": self.NUMBER,
+                    "date": "2026-03-14",
+                    "payee_name": "Zero Delta LLC",
+                    "payer_name": "Acme Corp",
+                    "line_items": "Consulting (2 hrs @ $100.00/hr)",
+                    "total": "200.00",
+                    "pdf_file": str(Path(tmpdir) / "invoice.pdf"),
+                    "status": "Sent",
+                }
+            )
+        return ledger
+
+    def _seed_db(self, db_path, with_invoice):
+        import zd
+
+        with patch.object(zd, "ZD_DB", db_path):
+            zd.init_db()
+            if with_invoice:
+                with zd.get_conn() as conn:
+                    conn.execute(
+                        "INSERT INTO clients (slug, name, rate) VALUES ('acme', 'Acme Corp', 100)"
+                    )
+                    conn.execute(
+                        "INSERT INTO invoices (invoice_number, client_id, invoice_date, total, status)"
+                        " VALUES (?, 1, '2026-03-14', 200, 'Sent')",
+                        (self.NUMBER,),
+                    )
+
+    def _run_status(self, tmpdir, ledger, db_path, new_status="Paid"):
+        config = {"storage": {"ledger_file": str(ledger), "invoices_dir": tmpdir}}
+        with patch.object(invoice, "load_config", return_value=config), patch.object(
+            invoice, "_zd_db_path", return_value=db_path
+        ):
+            return CliRunner().invoke(invoice.cli, ["status", self.NUMBER, new_status])
+
+    def test_zd_tracked_invoice_is_refused_and_csv_untouched(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ledger = self._write_ledger(tmpdir)
+            db_path = Path(tmpdir) / "zd.db"
+            self._seed_db(db_path, with_invoice=True)
+            before = ledger.read_bytes()
+
+            result = self._run_status(tmpdir, ledger, db_path, "Paid")
+
+            self.assertNotEqual(result.exit_code, 0)
+            self.assertIn(f"zd paid {self.NUMBER}", result.output)
+            self.assertEqual(ledger.read_bytes(), before)
+
+    def test_zd_tracked_invoice_non_paid_status_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ledger = self._write_ledger(tmpdir)
+            db_path = Path(tmpdir) / "zd.db"
+            self._seed_db(db_path, with_invoice=True)
+            before = ledger.read_bytes()
+
+            result = self._run_status(tmpdir, ledger, db_path, "Overdue")
+
+            self.assertNotEqual(result.exit_code, 0)
+            self.assertIn("zd", result.output)
+            self.assertEqual(ledger.read_bytes(), before)
+
+    def test_refusal_does_not_modify_the_zd_db(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ledger = self._write_ledger(tmpdir)
+            db_path = Path(tmpdir) / "zd.db"
+            self._seed_db(db_path, with_invoice=True)
+            files_before = sorted(p.name for p in Path(tmpdir).iterdir())
+            db_before = db_path.read_bytes()
+
+            self._run_status(tmpdir, ledger, db_path, "Paid")
+
+            self.assertEqual(db_path.read_bytes(), db_before)
+            self.assertEqual(sorted(p.name for p in Path(tmpdir).iterdir()), files_before)
+
+    def test_csv_only_invoice_still_updates_when_db_exists(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ledger = self._write_ledger(tmpdir)
+            db_path = Path(tmpdir) / "zd.db"
+            self._seed_db(db_path, with_invoice=False)
+
+            result = self._run_status(tmpdir, ledger, db_path, "Paid")
+
+            self.assertEqual(result.exit_code, 0, msg=result.output)
+            with open(ledger, newline="", encoding="utf-8") as f:
+                self.assertEqual(list(csv.DictReader(f))[0]["status"], "Paid")
+
+    def test_missing_db_file_keeps_csv_behavior_and_does_not_create_it(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ledger = self._write_ledger(tmpdir)
+            db_path = Path(tmpdir) / "absent.db"
+
+            result = self._run_status(tmpdir, ledger, db_path, "Paid")
+
+            self.assertEqual(result.exit_code, 0, msg=result.output)
+            self.assertFalse(db_path.exists())
+            with open(ledger, newline="", encoding="utf-8") as f:
+                self.assertEqual(list(csv.DictReader(f))[0]["status"], "Paid")
+
+    def test_db_without_invoices_table_keeps_csv_behavior(self):
+        import sqlite3
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ledger = self._write_ledger(tmpdir)
+            db_path = Path(tmpdir) / "empty.db"
+            sqlite3.connect(db_path).close()
+
+            result = self._run_status(tmpdir, ledger, db_path, "Paid")
+
+            self.assertEqual(result.exit_code, 0, msg=result.output)
+
+    def test_unreadable_db_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ledger = self._write_ledger(tmpdir)
+            db_path = Path(tmpdir) / "garbage.db"
+            db_path.write_bytes(b"this is not a sqlite database" * 100)
+            before = ledger.read_bytes()
+
+            result = self._run_status(tmpdir, ledger, db_path, "Paid")
+
+            self.assertNotEqual(result.exit_code, 0)
+            self.assertEqual(ledger.read_bytes(), before)
+
+
 if __name__ == "__main__":
     unittest.main()
