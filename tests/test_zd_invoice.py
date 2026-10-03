@@ -1537,7 +1537,7 @@ class ZdInvoiceTests(unittest.TestCase):
         # CSV update it did not make.
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path, config_path = self._seed_invoice_row(tmpdir, "2026-0001")
-            self._write_ledger_csv(
+            csv_path = self._write_ledger_csv(
                 config_path,
                 [
                     {
@@ -1567,6 +1567,11 @@ class ZdInvoiceTests(unittest.TestCase):
             self.assertNotIn("marked Paid in zd DB and CSV ledger", result.output)
             self.assertIn("No matching row for 2026-0001 found in the CSV ledger", result.output)
             self.assertNotIn("zd reconcile", result.output)
+            # Nothing matched, so the ledger was neither rewritten nor backed up.
+            self.assertEqual(
+                list(csv_path.parent.glob(f"{csv_path.name}.*.bak")), [],
+                "an unmatched paid must not back up or rewrite the CSV ledger",
+            )
 
     def test_paid_backs_up_csv_before_patching_matched_row(self):
         with tempfile.TemporaryDirectory() as tmpdir:

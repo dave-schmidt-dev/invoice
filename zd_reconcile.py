@@ -2,6 +2,7 @@
 
 from decimal import Decimal
 from pathlib import Path
+from invoice_ledger import update_ledger_rows
 from zd_store import _backup_file, to_money
 from zd_summary import group_sessions_by_week
 
@@ -241,20 +242,15 @@ def _converge_db_to_csv(conn, *, apply, report=True, echo_prefix=""):
 
     if status_behind_rows:
         try:
-            with inv_mod._file_lock(csv_path):
-                rows, headers = inv_mod._read_csv_with_headers(csv_path)
-                inv_key = inv_mod._csv_field_key(headers, "invoice_number") or "invoice_number"
-                status_key = inv_mod._csv_field_key(headers, "status") or "status"
-                numbers_to_patch = {str(r["invoice_number"]) for r in status_behind_rows}
-                patched_any = False
-                for r in rows:
-                    if r.get(inv_key) in numbers_to_patch:
-                        r[status_key] = "Paid"
-                        patched_any = True
-                if patched_any:
-                    _backup_file(csv_path)
-                    inv_mod._atomic_write_csv(csv_path, rows, headers)
-                    result.status_synced = sorted(numbers_to_patch)
+            numbers_to_patch = {str(r["invoice_number"]) for r in status_behind_rows}
+            patched = update_ledger_rows(
+                csv_path,
+                {number: {"status": "Paid"} for number in numbers_to_patch},
+                backup=_backup_file,
+                first_match_only=False,
+            )
+            if patched:
+                result.status_synced = sorted(numbers_to_patch)
         except Exception as e:
             result.warning = f"reconcile: could not sync Paid status to the CSV ({e})"
 

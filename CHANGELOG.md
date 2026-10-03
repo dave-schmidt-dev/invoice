@@ -6,6 +6,10 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/
 
 ## [Unreleased]
 
+### Changed
+
+- Ledger CSV row patches (`invoice.py status`, `zd paid`, `zd reconcile --fix`, `zd invoice --regenerate`) now share one helper, `invoice_ledger.update_ledger_rows`, so the lock, backup and atomic-write sequence lives in one place. Behavior is unchanged.
+
 ### Fixed
 
 - `invoice.py status` no longer changes the status of an invoice that is tracked in the

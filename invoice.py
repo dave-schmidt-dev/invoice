@@ -38,7 +38,7 @@ from invoice_ledger import (  # noqa: E402,F401 - moved to invoice_ledger.py
     _sanitize_filename_component, _validate_invoice_number, _csv_safe, _file_lock,
     _get_file_mode, _atomic_write_json, _read_csv_with_headers, _csv_field_key,
     _atomic_write_csv, get_next_invoice_number, _invoice_number_exists,
-    zd_db_tracks_invoice,
+    zd_db_tracks_invoice, update_ledger_rows,
 )
 from invoice_input import (  # noqa: E402,F401 - moved to invoice_input.py
     _VALID_LOGO_EXTS, PAYMENT_TERMS_CHOICES, MONEY_PRECISION, _DEFAULT_CLIENT,
@@ -752,31 +752,13 @@ def cmd_status(invoice_number, status):
             f"invoice.py will not change its status. {hint} Nothing was written."
         )
 
-    with _file_lock(csv_file):
-        rows, file_headers = _read_csv_with_headers(csv_file)
-        inv_key = _csv_field_key(file_headers, "invoice_number") or "invoice_number"
-        status_key = _csv_field_key(file_headers, "status")
-        if status_key is None:
-            # Legacy ledger predates the status column — add it for every row
-            # so _atomic_write_csv (kept strict) doesn't choke on an unknown key.
-            status_key = "status"
-            file_headers = list(file_headers) + [status_key]
+    # A legacy ledger predating the status column gets it added (add_missing_columns).
+    if not update_ledger_rows(
+        csv_file, {invoice_number: {"status": status.capitalize()}}, add_missing_columns=True
+    ):
+        click.echo(f"Invoice #{invoice_number} not found.")
+        return
 
-        # Find the invoice
-        found = False
-        for row in rows:
-            if row.get(inv_key) == invoice_number:
-                row[status_key] = status.capitalize()
-                found = True
-                break
-
-        if not found:
-            click.echo(f"Invoice #{invoice_number} not found.")
-            return
-
-        # Write back atomically using the file's actual headers.
-        _atomic_write_csv(Path(csv_file), rows, file_headers)
-    
     click.echo(f"✓ Invoice #{invoice_number} status updated to: {status.capitalize()}")
 
 

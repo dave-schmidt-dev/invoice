@@ -7,6 +7,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 import click
 import zd
+from invoice_ledger import update_ledger_rows
 
 
 @zd.cli.command("invoice")
@@ -361,18 +362,12 @@ def cmd_invoice(client, invoice_date, invoice_month, summarize_weeks, flat_amoun
             csv_path = Path(csv_file)
             if csv_path.exists():
                 try:
-                    with inv_mod._file_lock(csv_path):
-                        zd._backup_file(csv_path)
-                        rows, file_headers = inv_mod._read_csv_with_headers(csv_path)
-                        inv_key = inv_mod._csv_field_key(file_headers, "invoice_number") or "invoice_number"
-                        total_key = inv_mod._csv_field_key(file_headers, "total") or "total"
-                        pdf_key = inv_mod._csv_field_key(file_headers, "pdf_file") or "pdf_file"
-                        for r in rows:
-                            if r.get(inv_key) == invoice_number:
-                                r[total_key] = f"{float(actual_total):.2f}"
-                                r[pdf_key] = pdf_path
-                                break
-                        inv_mod._atomic_write_csv(csv_path, rows, file_headers)
+                    update_ledger_rows(
+                        csv_path,
+                        {invoice_number: {"total": f"{float(actual_total):.2f}", "pdf_file": pdf_path}},
+                        backup=zd._backup_file,
+                        write_unmatched=True,
+                    )
                 except Exception as e:
                     click.echo(f"  ⚠  Could not update CSV ledger: {e}")
 

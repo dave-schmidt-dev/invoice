@@ -5,6 +5,7 @@ from decimal import Decimal
 from pathlib import Path
 import click
 import zd
+from invoice_ledger import update_ledger_rows
 
 
 @zd.cli.command("reconcile")
@@ -197,19 +198,9 @@ def cmd_paid(invoice_number, paid_date_arg):
 
         csv_path = Path(csv_file)
         if csv_path.exists():
-            matched = False
-            with inv_mod._file_lock(csv_path):
-                rows, file_headers = inv_mod._read_csv_with_headers(csv_path)
-                inv_key = inv_mod._csv_field_key(file_headers, "invoice_number") or "invoice_number"
-                status_key = inv_mod._csv_field_key(file_headers, "status") or "status"
-                for r in rows:
-                    if r.get(inv_key) == invoice_number:
-                        r[status_key] = "Paid"
-                        matched = True
-                        break
-                if matched:
-                    zd._backup_file(csv_path)
-                    inv_mod._atomic_write_csv(csv_path, rows, file_headers)
+            matched = update_ledger_rows(
+                csv_path, {invoice_number: {"status": "Paid"}}, backup=zd._backup_file
+            )
             if matched:
                 click.echo(f"  ✓  Invoice {invoice_number} marked Paid in zd DB and CSV ledger.")
             else:
