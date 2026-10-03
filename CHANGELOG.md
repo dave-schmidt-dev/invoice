@@ -12,10 +12,13 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/
 
 ### Changed
 
-- Removed unused re-exports and imports left behind by the module split from `invoice.py` and `zd.py`; `invoice.py` is back under 800 lines. No behavior change.
 - Ledger CSV row patches (`invoice.py status`, `zd paid`, `zd reconcile --fix`, `zd invoice --regenerate`) now share one helper, `invoice_ledger.update_ledger_rows`, so the lock, backup and atomic-write sequence lives in one place. Behavior is unchanged.
 - The four copies of the fresh-load-invoice.py snippet in zd now share `zd._load_invoice()`. Behavior is unchanged.
 - `zd.py` and `invoice.py` share one file-logger bootstrap, `cli_logging.configure_file_logger`. Behavior is unchanged.
+
+### Removed
+
+- Unused re-exports and imports left behind by the module split in `invoice.py` and `zd.py`; `invoice.py` is back under 800 lines. No behavior change. No behavior change.
 
 ### Fixed
 
