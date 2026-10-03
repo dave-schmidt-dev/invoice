@@ -12,43 +12,29 @@ Usage:
 """
 
 import copy
-import csv
-import hashlib
 import json
 import logging
 import os
-import re
 import shutil
 import sqlite3
-import subprocess
-import sys
-import tempfile
-import unicodedata
-import urllib.parse
-from contextlib import contextmanager
 from datetime import date, datetime
-from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from decimal import Decimal
 from pathlib import Path
 
 import click
-from fpdf import FPDF
 from cli_logging import configure_file_logger
 from invoice_ledger import (  # noqa: E402,F401 - moved to invoice_ledger.py
-    CSV_FORMULA_PREFIXES, SAFE_FILENAME_RE, INVOICE_NUMBER_RE, fcntl, CSV_HEADERS,
-    _sanitize_filename_component, _validate_invoice_number, _csv_safe, _file_lock,
-    _get_file_mode, _atomic_write_json, _read_csv_with_headers, _csv_field_key,
+    CSV_HEADERS, _sanitize_filename_component, _validate_invoice_number, _csv_safe,
+    _file_lock, _atomic_write_json, _read_csv_with_headers, _csv_field_key,
     _atomic_write_csv, get_next_invoice_number, _invoice_number_exists,
     zd_db_tracks_invoice, update_ledger_rows,
 )
 from invoice_input import (  # noqa: E402,F401 - moved to invoice_input.py
-    _VALID_LOGO_EXTS, PAYMENT_TERMS_CHOICES, MONEY_PRECISION, _DEFAULT_CLIENT,
-    _to_decimal, _to_money_decimal, _prompt_decimal, _open_path, _open_email_client,
-    _prompt_client_info, get_line_items,
+    _VALID_LOGO_EXTS, PAYMENT_TERMS_CHOICES, _DEFAULT_CLIENT, _to_money_decimal, _open_path,
+    _open_email_client, _prompt_client_info, get_line_items,
 )
 from invoice_pdf import (  # noqa: E402,F401 - moved to invoice_pdf.py
-    _LOGO_MAX_W, _LOGO_MAX_H, _split_address_lines, _DESC_W, _HRS_W, _RATE_W, _AMT_W,
-    _LABEL_W, _FULL_W, _TYPOGRAPHIC_MAP, _TYPOGRAPHIC_TABLE, _latin1_safe, _InvoicePDF,
-    _multi_cell_height, _payee_lines, _payee_contact_lines, _client_lines, generate_pdf,
+    _split_address_lines, _latin1_safe, _InvoicePDF, _multi_cell_height, generate_pdf,
 )
 
 LOG_FILE = os.environ.get("INVOICE_LOG_FILE", "/tmp/invoice.log")
@@ -359,21 +345,6 @@ def _run_config_setup(existing=None):
     save_config(config)
     click.echo(f"\nConfig saved to '{CONFIG_FILE}'.")
     return config
-
-
-# ---------------------------------------------------------------------------
-# Invoice number
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# Line items
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# PDF generation
-# ---------------------------------------------------------------------------
 
 
 # ---------------------------------------------------------------------------

@@ -3,4 +3,3 @@
 # reasonably be split; "not refactored yet" is not one. Legacy entries record files already
 # over 800 lines when this rule was adopted: split them when next substantially changed,
 # then delete the entry. Entries record a reason, never a line cap.
-invoice.py zd loads invoice.py fresh per call, so its per-load defaults, their readers, patched-name readers and click commands must share its globals; a further split needs behavior-level changes (tracked in TASKS).

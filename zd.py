@@ -20,18 +20,14 @@ Usage:
 
 import contextlib
 import logging
-import math
-import shutil
+import shutil  # noqa: F401 - tests patch zd.shutil.which
 import sqlite3
 import sys
 import os
-import copy
-import json
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import date, datetime, timedelta
-from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
+from datetime import date
 from pathlib import Path
 
 import click
@@ -39,18 +35,15 @@ from click.shell_completion import CompletionItem
 from cli_logging import configure_file_logger
 from zd_store import (  # noqa: E402,F401 - moved to zd_store.py
     _MAX_BACKUPS, _backed_up_this_run, _backup_file, _backup_db, _SCHEMA_VERSION,
-    _MIGRATIONS, _column_exists, MONEY, to_money, get_client, week_label, week_key,
+    _MIGRATIONS, _column_exists, to_money, get_client, week_label, week_key,
     BACKFILL_SESSIONS, SEED_CLIENTS, _due_date_str, _month_bounds,
 )
 from zd_summary import (  # noqa: E402,F401 - moved to zd_summary.py
-    LOCAL_SUMMARY_BASE_URL, LOCAL_SUMMARY_MODEL, LOCAL_SUMMARY_MODEL_PATH,
-    LOCAL_SUMMARY_LOG, LOCAL_SUMMARY_TIMEOUT, LOCAL_SUMMARY_STARTUP_TIMEOUT,
-    WeekSummaryError, SummaryServerError, _clean_week_summary, _notes_for_summary,
-    _summary_timeout, _weekly_summary_config, _parse_host_port, _is_loopback_host,
+    LOCAL_SUMMARY_STARTUP_TIMEOUT, WeekSummaryError, SummaryServerError,
+    _clean_week_summary, _weekly_summary_config, _parse_host_port, _is_loopback_host,
     summarize_week_with_local_gemma, group_sessions_by_week,
 )
 from zd_reconcile import (  # noqa: E402,F401 - moved to zd_reconcile.py
-    _SCRIPT_DIR, INVOICE_PY, _ReconcileResult, _reconstruct_csv_line_items,
     _converge_db_to_csv, _load_invoice,
 )
 
@@ -63,11 +56,6 @@ def _setup_logging(debug: bool):
     LOG_FILE is read at call time so tests can patch it.
     """
     return configure_file_logger("zd", LOG_FILE, debug)
-
-
-# ---------------------------------------------------------------------------
-# Backups — timestamped copies before any destructive write, keep last 20
-# ---------------------------------------------------------------------------
 
 
 # ---------------------------------------------------------------------------
@@ -413,11 +401,6 @@ def _summary_server_context(summary_settings):
         if we_started and proc is not None:
             click.echo("  Stopping local llama-server.")
             _shutdown_summary_server(proc)
-
-
-# ---------------------------------------------------------------------------
-# Seed data (backfill)
-# ---------------------------------------------------------------------------
 
 
 # ---------------------------------------------------------------------------
