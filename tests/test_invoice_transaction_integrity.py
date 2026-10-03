@@ -229,14 +229,14 @@ class InvoiceTransactionIntegrityTests(unittest.TestCase):
             # UPDATEs run (in an open, UNCOMMITTED transaction), but the point
             # of no return is never crossed: cmd_invoice's handler must
             # rollback and delete the temp PDF.
-            class FailingCommitConn(sqlite3.Connection):
+            class FailingCommitConn(zd._ClosingConnection):
                 def commit(self):  # noqa: D401 - injected failure
                     raise RuntimeError("injected commit failure")
 
             real_connect = zd.sqlite3.connect
 
             def failing_connect(*args, **kwargs):
-                kwargs.setdefault("factory", FailingCommitConn)
+                kwargs["factory"] = FailingCommitConn
                 return real_connect(*args, **kwargs)
 
             runner = CliRunner()

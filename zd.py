@@ -104,6 +104,20 @@ def _migrate(conn):
     conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
 
 
+class _ClosingConnection(sqlite3.Connection):
+    """sqlite3 connection whose ``with`` block also closes it.
+
+    A plain connection's context manager only commits or rolls back, so every
+    ``with get_conn() as conn:`` left the connection open until GC.
+    """
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        try:
+            return super().__exit__(exc_type, exc_value, traceback)
+        finally:
+            self.close()
+
+
 def get_conn(readonly=False):
     """Open a connection to ZD_DB, set standard PRAGMAs, and (unless
     readonly) snapshot the pre-write state via the online-backup API.
@@ -115,7 +129,7 @@ def get_conn(readonly=False):
     tab-completion have nothing to protect against and were otherwise
     hollowing out the _MAX_BACKUPS retention window on every invocation.
     """
-    conn = sqlite3.connect(ZD_DB)
+    conn = sqlite3.connect(ZD_DB, factory=_ClosingConnection)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")

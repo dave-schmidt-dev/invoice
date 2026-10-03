@@ -275,10 +275,12 @@ def zd_db_tracks_invoice(db_path, invoice_number):
 
     The zd SQLite DB is authoritative for zd-generated invoices (INV-2), so
     invoice.py must not change their status behind its back. The DB is opened
-    read-only through a URI: no backup, migration, WAL change or file creation
-    can happen here. A missing DB file, or a DB with no `invoices` table yet,
-    means "not tracked". Any other SQLite failure propagates so the caller can
-    fail closed rather than diverge the two records.
+    read-only through a URI: no backup, migration or write to the DB file can
+    happen here. SQLite may still create the ``-wal``/``-shm`` sidecar files
+    when it opens a WAL-mode DB that has none. A missing DB file, or a DB with
+    no `invoices` table yet, means "not tracked". Any other SQLite failure
+    propagates so the caller can fail closed rather than diverge the two
+    records.
     """
     db_path = Path(db_path)
     if not db_path.exists():

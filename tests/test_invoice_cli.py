@@ -1,7 +1,6 @@
 import tests  # noqa: F401 - HOME/log isolation guard (see tests/__init__.py)
 
 import csv
-import gc
 import json
 import logging
 import os
@@ -421,10 +420,6 @@ class StatusZdTrackedTests(unittest.TestCase):
                         " VALUES (?, 1, '2026-03-14', 200, 'Sent')",
                         (self.NUMBER,),
                     )
-        # zd.get_conn() connections are not closed by their `with` block; collect
-        # them so the WAL is checkpointed now. Otherwise a later GC pass rewrites
-        # the DB file and the byte-for-byte "refusal wrote nothing" check flakes.
-        gc.collect()
 
     def _run_status(self, tmpdir, ledger, db_path, new_status="Paid"):
         config = {"storage": {"ledger_file": str(ledger), "invoices_dir": tmpdir}}
@@ -464,13 +459,17 @@ class StatusZdTrackedTests(unittest.TestCase):
             ledger = self._write_ledger(tmpdir)
             db_path = Path(tmpdir) / "zd.db"
             self._seed_db(db_path, with_invoice=True)
-            files_before = sorted(p.name for p in Path(tmpdir).iterdir())
+            files_before = {p.name for p in Path(tmpdir).iterdir()}
             db_before = db_path.read_bytes()
 
             self._run_status(tmpdir, ledger, db_path, "Paid")
 
             self.assertEqual(db_path.read_bytes(), db_before)
-            self.assertEqual(sorted(p.name for p in Path(tmpdir).iterdir()), files_before)
+            # A read-only open of a WAL-mode DB may create the -wal/-shm
+            # sidecars; it must create nothing else and remove nothing.
+            files_after = {p.name for p in Path(tmpdir).iterdir()}
+            self.assertLessEqual(files_before, files_after)
+            self.assertLessEqual(files_after - files_before, {"zd.db-wal", "zd.db-shm"})
 
     def test_csv_only_invoice_still_updates_when_db_exists(self):
         with tempfile.TemporaryDirectory() as tmpdir:
