@@ -202,7 +202,7 @@ Sessions are grouped into weekly line items (Monday-anchored, year-inclusive so 
     "base_url": "http://127.0.0.1:8086",
     "model": "summarizer",
     "model_path": "/Users/you/models/narrator-bench/gemma-e2b/gemma-4-E2B-it-Q4_K_M.gguf",
-    "log_path": "/tmp/zd-summary-server.log",
+    "log_path": "/Users/you/Documents/Projects/invoice/.logs/zd-summary-server.log",
     "timeout_seconds": 30
   }
 }
@@ -216,6 +216,8 @@ Requirements:
 - A GGUF weights file at `model_path`.
 
 If a server is already responding at `base_url` when zd starts, zd will use it instead of spawning a new one (and won't shut it down at the end — that server belongs to someone else). If spawning fails, or if `/health` doesn't respond within the startup timeout, zd aborts cleanly. If the summary API call fails for any other reason, invoice generation falls back to the plain date-range labels.
+
+`log_path` defaults to the project's gitignored `.logs/zd-summary-server.log` (created `0600`; it can hold session notes sent for summarization).
 
 Environment overrides: `ZD_SUMMARY_BASE_URL`, `ZD_SUMMARY_MODEL`, `ZD_SUMMARY_MODEL_PATH`, `ZD_SUMMARY_LOG`, `ZD_SUMMARY_TIMEOUT`.
 

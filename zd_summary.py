@@ -7,6 +7,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 import click
+from cli_logging import default_log_file
 from zd_store import to_money, week_label, week_key
 
 
@@ -22,7 +23,7 @@ LOCAL_SUMMARY_MODEL_PATH = os.environ.get(
 )
 
 
-LOCAL_SUMMARY_LOG = os.environ.get("ZD_SUMMARY_LOG", "/tmp/zd-summary-server.log")
+LOCAL_SUMMARY_LOG = os.environ.get("ZD_SUMMARY_LOG", default_log_file("zd-summary-server"))
 
 
 LOCAL_SUMMARY_TIMEOUT = 30.0

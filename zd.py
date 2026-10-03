@@ -326,7 +326,7 @@ def _spawn_summary_server(model_path, base_url, alias, log_path):
             f"or ZD_SUMMARY_MODEL_PATH env var."
         )
     host, port = _parse_host_port(base_url)
-    Path(log_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(log_path).parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     # Owner-only (0600): this log captures llama-server's stdout/stderr, which
     # can include client session notes sent for summarization (INV-1). Create
     # via os.open so the mode applies at creation time (bypassing umask), then

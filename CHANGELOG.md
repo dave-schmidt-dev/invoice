@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/
 
 ### Fixed
 
+- The local summary server's log (`--summarize-weeks`) now defaults to `.logs/zd-summary-server.log` in the project instead of `/tmp`; `ZD_SUMMARY_LOG` and `weekly_summaries.log_path` still override it.
 - `zd` closes its SQLite connections when each command's `with` block ends instead of leaving them to garbage collection (no more unclosed-database ResourceWarnings).
 - `zd` and `invoice.py` now log to the project's gitignored `.logs/zd.log` and `.logs/invoice.log` instead of `/tmp`; `ZD_LOG_FILE` / `INVOICE_LOG_FILE` still override the path.
 - The legacy-ledger `invoice.py status` test pins its zd database path, so a `~/.zd.db` in the test HOME can no longer change its result.

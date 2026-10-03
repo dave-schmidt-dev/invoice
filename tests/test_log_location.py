@@ -45,6 +45,25 @@ class DefaultLogLocationTests(unittest.TestCase):
         self.assertEqual(Path(zd_log), LOG_DIR / "zd.log")
         self.assertEqual(Path(invoice_log), LOG_DIR / "invoice.log")
 
+    def test_summary_server_log_defaults_to_project_logs_without_override(self):
+        # llama-server's log can hold session notes sent for summarization.
+        with tempfile.TemporaryDirectory() as scratch_home:
+            env = {k: v for k, v in os.environ.items() if k != "ZD_SUMMARY_LOG"}
+            env["HOME"] = scratch_home
+            probe = (
+                "import json, zd_summary\n"
+                "print(json.dumps([zd_summary.LOCAL_SUMMARY_LOG,"
+                " zd_summary._weekly_summary_config({})['log_path']]))\n"
+            )
+            proc = subprocess.run(
+                [sys.executable, "-c", probe],
+                cwd=REPO_ROOT, env=env, capture_output=True, text=True, timeout=60,
+            )
+        self.assertEqual(proc.returncode, 0, msg=proc.stderr)
+        default, configured = json.loads(proc.stdout.strip().splitlines()[-1])
+        self.assertEqual(Path(default), LOG_DIR / "zd-summary-server.log")
+        self.assertEqual(configured, default)
+
     def test_logs_dir_is_gitignored_by_the_tracked_gitignore(self):
         lines = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
         self.assertIn(".logs/", lines)
