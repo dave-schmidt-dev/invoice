@@ -4,6 +4,8 @@ import csv
 import gc
 import json
 import logging
+import os
+import sqlite3
 import tempfile
 import unittest
 from logging.handlers import RotatingFileHandler
@@ -147,13 +149,30 @@ class InvoiceCliTests(unittest.TestCase):
                     }
                 )
 
+            # Whatever ~/.zd.db the ambient HOME holds (here one that tracks this
+            # invoice) must not decide the outcome: the test pins its own DB path.
+            home = Path(tmpdir) / "home"
+            home.mkdir()
+            ambient_db = sqlite3.connect(home / ".zd.db")
+            try:
+                ambient_db.execute("CREATE TABLE invoices (invoice_number TEXT)")
+                ambient_db.execute("INSERT INTO invoices VALUES ('2026-0001')")
+                ambient_db.commit()
+            finally:
+                ambient_db.close()
+
             config = {"storage": {"ledger_file": str(ledger_path), "invoices_dir": tmpdir}}
-            with patch.object(invoice, "load_config", return_value=config):
+            db_path = Path(tmpdir) / "absent.db"
+            with patch.dict(os.environ, {"HOME": str(home)}), patch.object(
+                invoice, "load_config", return_value=config
+            ), patch.object(invoice, "_zd_db_path", return_value=db_path) as mock_db_path:
                 result = runner.invoke(invoice.cli, ["status", "2026-0001", "Paid"])
 
             self.assertEqual(result.exit_code, 0, msg=result.output)
             self.assertIsNone(result.exception)
             self.assertIn("status updated to: Paid", result.output)
+            mock_db_path.assert_called_once_with()
+            self.assertFalse(db_path.exists())
 
             with open(ledger_path, newline="", encoding="utf-8") as f:
                 rows = list(csv.DictReader(f))
