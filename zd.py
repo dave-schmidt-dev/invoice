@@ -32,11 +32,11 @@ import urllib.parse
 import urllib.request
 from datetime import date, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
-from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 import click
 from click.shell_completion import CompletionItem
+from cli_logging import configure_file_logger
 from zd_store import (  # noqa: E402,F401 - moved to zd_store.py
     _MAX_BACKUPS, _backed_up_this_run, _backup_file, _backup_db, _SCHEMA_VERSION,
     _MIGRATIONS, _column_exists, MONEY, to_money, get_client, week_label, week_key,
@@ -58,39 +58,11 @@ LOG_FILE = os.environ.get("ZD_LOG_FILE", "/tmp/zd.log")
 
 
 def _setup_logging(debug: bool):
-    """Configure the named "zd" logger (never the root logger, so we don't
-    capture click/fpdf2/third-party log noise or spam stderr).
+    """Configure the named "zd" logger (see cli_logging.configure_file_logger).
 
-    Idempotent: repeated calls (e.g. across CliRunner invocations in tests)
-    never stack duplicate handlers — only the level is refreshed on repeat
-    calls. Level is DEBUG when --debug is passed, WARNING otherwise, set on
-    both the logger and the handler.
-
-    INV-1 defense-in-depth: LOG_FILE lives in /tmp, a shared directory, so
-    the file is best-effort chmod'd to owner-only (0600) after the handler
-    creates it. Log CONTENT must stay PII-free regardless — see callers.
+    LOG_FILE is read at call time so tests can patch it.
     """
-    logger = logging.getLogger("zd")
-    logger.propagate = False
-    level = logging.DEBUG if debug else logging.WARNING
-    if not logger.handlers:
-        handler = RotatingFileHandler(
-            LOG_FILE, maxBytes=1024 * 1024, backupCount=2, encoding="utf-8"
-        )
-        handler.setFormatter(
-            logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
-        )
-        handler.setLevel(level)
-        logger.addHandler(handler)
-        try:
-            os.chmod(LOG_FILE, 0o600)
-        except OSError:
-            pass
-    else:
-        for handler in logger.handlers:
-            handler.setLevel(level)
-    logger.setLevel(level)
-    return logger
+    return configure_file_logger("zd", LOG_FILE, debug)
 
 
 # ---------------------------------------------------------------------------

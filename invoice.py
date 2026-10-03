@@ -28,11 +28,11 @@ import urllib.parse
 from contextlib import contextmanager
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
-from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 import click
 from fpdf import FPDF
+from cli_logging import configure_file_logger
 from invoice_ledger import (  # noqa: E402,F401 - moved to invoice_ledger.py
     CSV_FORMULA_PREFIXES, SAFE_FILENAME_RE, INVOICE_NUMBER_RE, fcntl, CSV_HEADERS,
     _sanitize_filename_component, _validate_invoice_number, _csv_safe, _file_lock,
@@ -55,39 +55,11 @@ LOG_FILE = os.environ.get("INVOICE_LOG_FILE", "/tmp/invoice.log")
 
 
 def _setup_logging(debug: bool):
-    """Configure the named "invoice" logger (never the root logger, so we
-    don't capture click/fpdf2/third-party log noise or spam stderr).
+    """Configure the named "invoice" logger (see cli_logging.configure_file_logger).
 
-    Idempotent: repeated calls (e.g. across CliRunner invocations in tests)
-    never stack duplicate handlers — only the level is refreshed on repeat
-    calls. Level is DEBUG when --debug is passed, WARNING otherwise, set on
-    both the logger and the handler.
-
-    INV-1 defense-in-depth: LOG_FILE lives in /tmp, a shared directory, so
-    the file is best-effort chmod'd to owner-only (0600) after the handler
-    creates it. Log CONTENT must stay PII-free regardless — see callers.
+    LOG_FILE is read at call time so tests can patch it.
     """
-    logger = logging.getLogger("invoice")
-    logger.propagate = False
-    level = logging.DEBUG if debug else logging.WARNING
-    if not logger.handlers:
-        handler = RotatingFileHandler(
-            LOG_FILE, maxBytes=1024 * 1024, backupCount=2, encoding="utf-8"
-        )
-        handler.setFormatter(
-            logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
-        )
-        handler.setLevel(level)
-        logger.addHandler(handler)
-        try:
-            os.chmod(LOG_FILE, 0o600)
-        except OSError:
-            pass
-    else:
-        for handler in logger.handlers:
-            handler.setLevel(level)
-    logger.setLevel(level)
-    return logger
+    return configure_file_logger("invoice", LOG_FILE, debug)
 
 # ---------------------------------------------------------------------------
 # Backups — timestamped copies before any destructive write, keep last 20
