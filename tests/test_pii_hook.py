@@ -334,6 +334,67 @@ class TestScanPiiFullTreeCatchesTrackedMatch(unittest.TestCase):
         self.assertIn("zzsecrettoken", result.stderr.lower())
         self.assertIn("HONESTY HEADER", result.stderr)
 
+    def _commit_tracked(self, *paths):
+        self._run(["git", "add", "-f", *paths])
+        commit = self._run(["git", "commit", "-q", "-m", "fixture"])
+        self.assertEqual(commit.returncode, 0, commit.stderr)
+
+    def test_scan_pii_loads_local_patterns(self):
+        (self.repo / "hooks" / "pii-patterns.txt").write_text("zzgenerictoken\n")
+        (self.repo / "hooks" / "pii-patterns.local.txt").write_text("zzlocaltoken\n")
+        (self.repo / "leaked.txt").write_text("leaked zzlocaltoken here\n")
+        self._commit_tracked("hooks/pii-patterns.txt", "leaked.txt")
+
+        result = self._run([str(REAL_SCANNER)])
+
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertIn("leaked.txt", result.stderr)
+
+    def test_scan_pii_blocks_tracked_local_pattern_file(self):
+        (self.repo / "hooks" / "pii-patterns.txt").write_text("zzgenerictoken\n")
+        (self.repo / "hooks" / "pii-patterns.local.txt").write_text("zzlocaltoken\n")
+        self._commit_tracked("hooks/pii-patterns.txt", "hooks/pii-patterns.local.txt")
+
+        result = self._run([str(REAL_SCANNER)])
+
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertIn("pii-patterns.local.txt is tracked", result.stderr)
+
+
+class TestLocalPatternFile(PiiHookTestCase):
+    """Case 10: the gitignored hooks/pii-patterns.local.txt companion."""
+
+    def test_local_pattern_blocks_commit(self):
+        self._write_patterns("zzgenerictoken\n")
+        (self.repo / "hooks" / "pii-patterns.local.txt").write_text("zzlocaltoken\n")
+        self._write_file("notes.txt", "mentions zzlocaltoken here\n")
+        self._stage("hooks/pii-patterns.txt", "notes.txt")
+
+        result = self._commit()
+
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertIn("forbidden PII", result.stderr)
+
+    def test_staged_local_pattern_file_blocks_commit(self):
+        self._write_patterns("zzgenerictoken\n")
+        (self.repo / "hooks" / "pii-patterns.local.txt").write_text("zzlocaltoken\n")
+        self._run(["git", "add", "-f", "hooks/pii-patterns.txt", "hooks/pii-patterns.local.txt"])
+
+        result = self._commit()
+
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertIn("pii-patterns.local.txt is staged", result.stderr)
+
+    def test_missing_local_file_notices_and_clean_diff_passes(self):
+        self._write_patterns("zzgenerictoken\n")
+        self._write_file("notes.txt", "nothing sensitive\n")
+        self._stage("hooks/pii-patterns.txt", "notes.txt")
+
+        result = self._commit()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("pii-patterns.local.txt not found", result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

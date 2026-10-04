@@ -35,6 +35,8 @@ echo "[scan-pii] NOT this scanner. A clean scan does NOT mean \"PII-safe\"." >&2
 
 repo_root="$(git rev-parse --show-toplevel)"
 patterns="$repo_root/hooks/pii-patterns.txt"
+# Gitignored companion with the literal identifiers. Loaded when present.
+local_patterns="$repo_root/hooks/pii-patterns.local.txt"
 
 if [[ ! -f "$patterns" ]]; then
     echo "[scan-pii] BLOCKED: pattern file missing: $patterns" >&2
@@ -42,12 +44,18 @@ if [[ ! -f "$patterns" ]]; then
     exit 1
 fi
 
-# Strip blank lines and comments from the pattern file. Each remaining line
+# Strip blank lines and comments from the pattern files. Each remaining line
 # is treated as a case-insensitive grep -E pattern. An empty pattern list
 # means we cannot verify anything, so fail closed.
-pattern_list="$(grep -Ev '^[[:space:]]*(#|$)' "$patterns" || true)"
+pattern_files=("$patterns")
+if [[ -f "$local_patterns" ]]; then
+    pattern_files+=("$local_patterns")
+else
+    echo "[scan-pii] notice: hooks/pii-patterns.local.txt not found; only the generic tracked patterns are active." >&2
+fi
+pattern_list="$(grep -hEv '^[[:space:]]*(#|$)' "${pattern_files[@]}" || true)"
 if [[ -z "$pattern_list" ]]; then
-    echo "[scan-pii] BLOCKED: $patterns has no active patterns (all blank/comments)." >&2
+    echo "[scan-pii] BLOCKED: ${pattern_files[*]} has no active patterns (all blank/comments)." >&2
     echo "[scan-pii] Cannot verify tracked content is free of PII without it." >&2
     exit 1
 fi
@@ -63,6 +71,12 @@ while IFS= read -r -d '' file; do
     if [[ "$file" == "hooks/pii-patterns.txt" ]]; then
         continue
     fi
+    # The local file holds real identifiers; tracking it is itself a leak.
+    if [[ "$file" == "hooks/pii-patterns.local.txt" ]]; then
+        echo "[scan-pii] BLOCKED: hooks/pii-patterns.local.txt is tracked; remove it from the index." >&2
+        overall_status=1
+        continue
+    fi
     # Skip files that no longer exist on disk (e.g. a tracked-but-deleted
     # path in an unusual worktree state) rather than letting grep error out.
     if [[ ! -f "$file" ]]; then
@@ -76,7 +90,7 @@ while IFS= read -r -d '' file; do
 
     if [[ $grep_status -ge 2 ]]; then
         echo "[scan-pii] BLOCKED: grep failed while scanning '$file' (exit $grep_status)." >&2
-        echo "[scan-pii] Check $patterns for a malformed regex." >&2
+        echo "[scan-pii] Check ${pattern_files[*]} for a malformed regex." >&2
         overall_status=1
         continue
     fi
@@ -96,9 +110,9 @@ if [[ $overall_status -ne 0 ]]; then
         echo "[scan-pii] BLOCKED: tracked files contain forbidden PII / sensitive patterns." >&2
     fi
     echo "[scan-pii] Rule: README.md -> \"No PII in the project\"." >&2
-    echo "[scan-pii] Pattern list: $patterns" >&2
+    echo "[scan-pii] Pattern list: ${pattern_files[*]}" >&2
     exit 1
 fi
 
-echo "[scan-pii] Clean: no tracked file matched a pattern in $patterns." >&2
+echo "[scan-pii] Clean: no tracked file matched a pattern in ${pattern_files[*]}." >&2
 exit 0

@@ -410,7 +410,9 @@ substitute a placeholder (`acme`, `globex`, `you@example.com`, `123 Main St`,
 placeholders.
 
 A version-controlled pre-commit hook (`hooks/pre-commit`) automatically blocks
-any staged diff that adds content matching patterns in `hooks/pii-patterns.txt`.
+any staged diff that adds content matching patterns in `hooks/pii-patterns.txt`
+(generic, tracked) or `hooks/pii-patterns.local.txt` (real identifiers,
+gitignored, loaded when present).
 Install it on this clone with the idempotent helper (or the raw `git config`
 it wraps):
 
@@ -434,8 +436,8 @@ operational files out of the repo (see `.gitignore`) plus human review — a
 clean scan does not by itself mean "PII-safe."
 
 If the hook blocks, fix the staged content — do not bypass with `--no-verify`.
-When you discover a new leak vector, add a pattern to `hooks/pii-patterns.txt`
-in the same commit that scrubs the existing content.
+When you discover a new leak vector, add a pattern to `hooks/pii-patterns.local.txt`
+and scrub the existing content in the same commit.
 
 If PII has already been pushed, raise it immediately — removing it requires
 rewriting history and a force-push, both of which need an explicit decision.

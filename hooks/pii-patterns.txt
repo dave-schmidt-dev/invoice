@@ -6,16 +6,14 @@
 # - Keep patterns specific enough to avoid false positives, broad enough to
 #   catch obvious variants (use \s* for optional spaces, \b for word boundaries).
 
-# --- Specific third-party people known to have appeared in scratch work ---
-justin\s*maile
-amjad
-razek
+#
+# This tracked file holds only GENERIC patterns that identify no one.
+# Literal names, case identifiers and client identifiers live in the
+# gitignored hooks/pii-patterns.local.txt, which the hook and the full-tree
+# scanner load too when it exists. Add specific leak vectors there.
 
-# --- Subject-matter / case identifiers ---
-\bokx\b
+# --- Apple Mail privacy-relay addresses ---
+privaterelay\.appleid\.com
 
-# --- Real client / org identifiers (use acme / globex placeholders instead) ---
-cipher\s*blade
-
-# --- Personal Apple Mail privacy-relay address that leaked into older commits ---
-royalty_naps
+# --- US Social Security number shape ---
+\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b

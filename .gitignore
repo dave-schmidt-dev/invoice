@@ -84,3 +84,6 @@ HISTORY.md
 TASKS.md
 history.md
 tasks.md
+
+# Local-only PII block list (real identifiers; see hooks/README.md)
+hooks/pii-patterns.local.txt

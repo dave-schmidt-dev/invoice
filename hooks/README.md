@@ -38,12 +38,15 @@ If the hook blocks, **fix the staged content**. Do NOT use `--no-verify`
 as a workaround — the entire point of the guard is to keep PII out of
 commit history, and bypassing it defeats that purpose.
 
-### `pii-patterns.txt`
+### `pii-patterns.txt` and `pii-patterns.local.txt`
 
-One case-insensitive `grep -E` pattern per non-comment line. Patterns
-intentionally contain the literal strings being guarded against — this
-file is a curated block list, not engagement data. Keep patterns specific
-enough to avoid false positives.
+One case-insensitive `grep -E` pattern per non-comment line. The tracked
+`pii-patterns.txt` holds only generic patterns that identify no one. Real
+names, case identifiers and client identifiers go in the gitignored
+`pii-patterns.local.txt`, which the hook and `scripts/scan-pii.sh` load when it
+exists. A fresh clone without it runs on the generic patterns and prints a
+notice. The hook blocks any commit that stages the local file, and the scanner
+fails if it is tracked.
 
-When you discover a new leak vector, add a pattern here in the same commit
-that scrubs the existing content.
+When you discover a new leak vector, add a pattern to the local file and scrub
+the existing content in the same commit.

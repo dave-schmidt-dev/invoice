@@ -14,6 +14,9 @@ set -euo pipefail
 
 repo_root="$(git rev-parse --show-toplevel)"
 patterns="$repo_root/hooks/pii-patterns.txt"
+# Gitignored companion with the literal identifiers (names, case and client
+# ids). Loaded when present; a fresh clone runs on the generic patterns only.
+local_patterns="$repo_root/hooks/pii-patterns.local.txt"
 
 # Lint step: unused imports in staged Python files (ruff F401, honoring
 # `# noqa`) so the re-export residue removed from invoice.py / zd.py cannot
@@ -41,9 +44,17 @@ if [[ ! -f "$patterns" ]]; then
     exit 1
 fi
 
-# The pattern file legitimately contains the guarded strings themselves, so
-# it alone is exempt from scanning. The hook script and any docs in hooks/
-# (e.g. README) are NOT exempt.
+# The local pattern file holds real identifiers, so it must never be
+# committed, even with `git add -f`.
+if git diff --cached --name-only -- hooks/pii-patterns.local.txt | grep -q .; then
+    echo "[pre-commit] BLOCKED: hooks/pii-patterns.local.txt is staged." >&2
+    echo "[pre-commit] It holds real identifiers and must stay local: git restore --staged hooks/pii-patterns.local.txt" >&2
+    exit 1
+fi
+
+# The tracked pattern file legitimately contains the guarded strings
+# themselves, so it alone is exempt from scanning. The hook script and any
+# docs in hooks/ (e.g. README) are NOT exempt.
 staged_diff="$(git diff --cached --no-color -U0 -- ':(exclude)hooks/pii-patterns.txt')"
 if [[ -z "$staged_diff" ]]; then
     exit 0
@@ -83,12 +94,18 @@ if [[ -z "$added_lines" ]]; then
     exit 0
 fi
 
-# Strip blank lines and comments from the pattern file. Each remaining
+# Strip blank lines and comments from the pattern files. Each remaining
 # line is treated as a case-insensitive grep -E pattern. An empty pattern
 # list means we cannot verify anything, so fail closed.
-pattern_list="$(grep -Ev '^[[:space:]]*(#|$)' "$patterns" || true)"
+pattern_files=("$patterns")
+if [[ -f "$local_patterns" ]]; then
+    pattern_files+=("$local_patterns")
+else
+    echo "[pre-commit] notice: hooks/pii-patterns.local.txt not found; only the generic tracked patterns are active." >&2
+fi
+pattern_list="$(grep -hEv '^[[:space:]]*(#|$)' "${pattern_files[@]}" || true)"
 if [[ -z "$pattern_list" ]]; then
-    echo "[pre-commit] BLOCKED: $patterns has no active patterns (all blank/comments)." >&2
+    echo "[pre-commit] BLOCKED: ${pattern_files[*]} has no active patterns (all blank/comments)." >&2
     echo "[pre-commit] Cannot verify staged content is free of PII without it." >&2
     exit 1
 fi
@@ -103,7 +120,7 @@ set -e
 
 if [[ $grep_status -ge 2 ]]; then
     echo "[pre-commit] BLOCKED: grep failed while scanning staged content (exit $grep_status)." >&2
-    echo "[pre-commit] Check $patterns for a malformed regex." >&2
+    echo "[pre-commit] Check ${pattern_files[*]} for a malformed regex." >&2
     exit 1
 fi
 
@@ -116,7 +133,7 @@ Matches (file-line-prefix is from the diff hunk, not the source file line):
 $hits
 
 Rule: README.md → "No PII in the project".
-Pattern list: $patterns
+Pattern list: ${pattern_files[*]}
 
 Fix the staged content. Do NOT bypass with --no-verify.
 
