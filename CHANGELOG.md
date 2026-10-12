@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/
 
 ### Changed
 
+- `invoice.py` and `zd.py` declare their dependencies in a PEP 723 header, so `uv run --script` runs them without the project venv or packages in the default `python3`.
+
 - The PII block list is split in two. The tracked `hooks/pii-patterns.txt` now holds only generic patterns; real identifiers live in the gitignored `hooks/pii-patterns.local.txt`, which the pre-commit hook and `scripts/scan-pii.sh` load when present. Staging or tracking the local file is blocked.
 - Ledger CSV row patches (`invoice.py status`, `zd paid`, `zd reconcile --fix`, `zd invoice --regenerate`) now share one helper, `invoice_ledger.update_ledger_rows`, so the lock, backup and atomic-write sequence lives in one place. Behavior is unchanged.
 - The four copies of the fresh-load-invoice.py snippet in zd now share `zd._load_invoice()`. Behavior is unchanged.

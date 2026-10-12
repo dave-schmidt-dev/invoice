@@ -1,4 +1,8 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.12"
+# dependencies = ["fpdf2>=2.7.0", "click>=8.0.0", "Pillow>=12.2.0"]
+# ///
 """
 zd — Zero Delta time tracker and invoice bridge.
 
