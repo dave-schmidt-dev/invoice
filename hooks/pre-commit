@@ -1,38 +1,46 @@
 #!/usr/bin/env bash
-# Pre-commit: refuse staged diffs that introduce known PII / sensitive
-# patterns. See README.md "No PII in the project" for the underlying rule.
-#
-# Runs in well under a second; safe to keep enabled for every commit.
-# To bypass intentionally, fix the staged content — do NOT use --no-verify
-# as a shortcut.
-#
-# Fail-closed by design: any error condition below (missing pattern file,
-# empty pattern list, unscannable binary content, grep failure) blocks the
-# commit rather than silently allowing it through.
-
+# Pre-commit: enforce source size, staged Python quality, and the PII guard.
 set -euo pipefail
 
 repo_root="$(git rev-parse --show-toplevel)"
 patterns="$repo_root/hooks/pii-patterns.txt"
-# Gitignored companion with the literal identifiers (names, case and client
-# ids). Loaded when present; a fresh clone runs on the generic patterns only.
 local_patterns="$repo_root/hooks/pii-patterns.local.txt"
 
-# Lint step: unused imports in staged Python files (ruff F401, honoring
-# `# noqa`) so the re-export residue removed from invoice.py / zd.py cannot
-# regrow. Kept to the one rule; it runs in well under a second. A machine
-# without ruff skips it with a notice rather than blocking the commit.
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "[pre-commit] BLOCKED: python3 is required to run the staged file-size check." >&2
+    exit 1
+fi
+if ! python3 "$repo_root/scripts/check_file_size.py" --staged; then
+    echo "[pre-commit] BLOCKED: staged source files exceed the size policy or Git could not read them." >&2
+    exit 1
+fi
+
+# Lint index blobs, so unstaged fixes cannot hide staged unused imports.
 staged_py=()
-while IFS= read -r staged_file; do
+while IFS= read -r -d '' staged_file; do
     staged_py+=("$staged_file")
-done < <(git diff --cached --name-only --diff-filter=ACM -- '*.py')
+done < <(git diff --cached --name-only -z --diff-filter=ACMR -- '*.py')
 if (( ${#staged_py[@]} > 0 )); then
     if command -v ruff >/dev/null 2>&1; then
-        if ! (cd "$repo_root" && ruff check --select F401 --no-cache "${staged_py[@]}"); then
-            echo "[pre-commit] BLOCKED: unused imports in staged Python files (ruff F401)." >&2
-            echo "[pre-commit] Remove them, or mark an intentional re-export with '# noqa: F401 - <who uses it>'." >&2
-            exit 1
-        fi
+        for staged_file in "${staged_py[@]}"; do
+            set +e
+            git cat-file blob ":$staged_file" 2>/dev/null | (cd "$repo_root" && ruff check --output-format concise --select F401 --no-cache --stdin-filename "$staged_file" -) >/dev/null 2>&1
+            pipeline_status=("${PIPESTATUS[@]}")
+            set -e
+            git_status="${pipeline_status[0]}"
+            ruff_status="${pipeline_status[1]}"
+            if (( git_status != 0 )); then
+                printf '[pre-commit] BLOCKED: Git could not read staged Python file %q (exit %s).\n' "$staged_file" "$git_status" >&2
+                exit 1
+            elif (( ruff_status == 1 )); then
+                printf '[pre-commit] BLOCKED: Ruff found staged unused imports (F401) in %q (exit %s).\n' "$staged_file" "$ruff_status" >&2
+                echo "[pre-commit] Remove them, or mark an intentional re-export with '# noqa: F401 - <who uses it>'." >&2
+                exit 1
+            elif (( ruff_status != 0 )); then
+                printf '[pre-commit] BLOCKED: Ruff tool/config failure while checking %q (exit %s).\n' "$staged_file" "$ruff_status" >&2
+                exit 1
+            fi
+        done
     else
         echo "[pre-commit] notice: ruff not found; skipping the unused-import check." >&2
     fi
@@ -44,24 +52,19 @@ if [[ ! -f "$patterns" ]]; then
     exit 1
 fi
 
-# The local pattern file holds real identifiers, so it must never be
-# committed, even with `git add -f`.
+# The local list contains private identifiers and must never be staged.
 if git diff --cached --name-only -- hooks/pii-patterns.local.txt | grep -q .; then
     echo "[pre-commit] BLOCKED: hooks/pii-patterns.local.txt is staged." >&2
     echo "[pre-commit] It holds real identifiers and must stay local: git restore --staged hooks/pii-patterns.local.txt" >&2
     exit 1
 fi
 
-# The tracked pattern file legitimately contains the guarded strings
-# themselves, so it alone is exempt from scanning. The hook script and any
-# docs in hooks/ (e.g. README) are NOT exempt.
+# The tracked generic list is exempt because it contains the patterns themselves.
 staged_diff="$(git diff --cached --no-color -U0 -- ':(exclude)hooks/pii-patterns.txt')"
 if [[ -z "$staged_diff" ]]; then
     exit 0
 fi
 
-# Added binary files can't be line-scanned. Block them so a human reviews
-# manually rather than silently letting unscannable content through.
 if printf '%s\n' "$staged_diff" | grep -q '^Binary files .* differ$'; then
     cat >&2 <<EOF
 
@@ -70,21 +73,15 @@ scanned for PII patterns.
 
 $(printf '%s\n' "$staged_diff" | grep '^Binary files .* differ$')
 
-Review the binary file manually for PII, then commit it with --no-verify
-only if you are certain it is clean. Prefer keeping binaries out of the
-repo (see README.md "No PII in the project").
+Review the binary for PII before adding it. If it cannot be safely scanned,
+keep it out of the repository.
 
 EOF
     exit 1
 fi
 
-# Only inspect ADDED content lines. Gate on the diff's hunk structure rather
-# than a naive '^+' filter: additions live INSIDE a hunk (after an '@@'
-# header), while the '+++ b/<path>' file header sits OUTSIDE any hunk (before
-# the first '@@'). This means content that itself begins with '+' — an E.164
-# number like +15551234567, or even a line whose content starts with '++'
-# (whose diff form is '+++...') — is scanned, while the file header is never
-# mistaken for content. The single leading diff '+' is stripped before scanning.
+# Track hunk boundaries so a content line beginning with '+' is scanned,
+# while the +++ b/path file header is ignored.
 added_lines="$(printf '%s\n' "$staged_diff" | awk '
     /^diff --git / { in_hunk = 0; next }
     /^@@/          { in_hunk = 1; next }
@@ -94,9 +91,6 @@ if [[ -z "$added_lines" ]]; then
     exit 0
 fi
 
-# Strip blank lines and comments from the pattern files. Each remaining
-# line is treated as a case-insensitive grep -E pattern. An empty pattern
-# list means we cannot verify anything, so fail closed.
 pattern_files=("$patterns")
 if [[ -f "$local_patterns" ]]; then
     pattern_files+=("$local_patterns")
@@ -110,32 +104,26 @@ if [[ -z "$pattern_list" ]]; then
     exit 1
 fi
 
-# Capture grep's exit code explicitly: 0 = matches found, 1 = no matches
-# (clean), >=2 = grep error (e.g. a bad regex in the pattern file) — treat
-# that as fail-closed rather than masking it with `|| true`.
+# grep uses 1 for a clean scan and >=2 for malformed patterns or I/O errors.
 set +e
-hits="$(printf '%s\n' "$added_lines" | grep -niE -f <(printf '%s\n' "$pattern_list"))"
+hit_count="$(printf '%s\n' "$added_lines" | grep -ciE -f <(printf '%s\n' "$pattern_list"))"
 grep_status=$?
 set -e
-
 if [[ $grep_status -ge 2 ]]; then
     echo "[pre-commit] BLOCKED: grep failed while scanning staged content (exit $grep_status)." >&2
     echo "[pre-commit] Check ${pattern_files[*]} for a malformed regex." >&2
     exit 1
 fi
-
-if [[ $grep_status -eq 0 && -n "$hits" ]]; then
+if [[ $grep_status -eq 0 && "$hit_count" -gt 0 ]]; then
     cat >&2 <<EOF
 
 [pre-commit] BLOCKED: staged content contains forbidden PII / sensitive patterns.
-
-Matches (file-line-prefix is from the diff hunk, not the source file line):
-$hits
+Matching added-line count: $hit_count
 
 Rule: README.md → "No PII in the project".
 Pattern list: ${pattern_files[*]}
 
-Fix the staged content. Do NOT bypass with --no-verify.
+Fix the staged content and retry.
 
 EOF
     exit 1

@@ -8,4 +8,4 @@ repo_root="$(git rev-parse --show-toplevel)"
 
 git -C "$repo_root" config core.hooksPath hooks
 
-echo "[install-hooks] core.hooksPath set to 'hooks' — pre-commit PII guard is now active."
+echo "[install-hooks] core.hooksPath set to 'hooks' — staged quality/PII checks and the pre-push unittest gate are active."

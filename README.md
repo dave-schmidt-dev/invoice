@@ -467,6 +467,11 @@ operational logs. Every test module starts with `import tests`, so the redirect
 also runs under `discover -s tests` or any other runner;
 `tests/test_test_isolation.py` fails if a test module drops that import.
 
+The installed pre-commit hook checks staged source size, staged Python unused
+imports (Ruff F401), and added-line PII patterns. The pre-push hook runs
+`./venv/bin/python -m unittest discover -v` from the repository root and blocks
+pushes when the interpreter is missing or the suite fails.
+
 ## License
 
 See [LICENSE](LICENSE).

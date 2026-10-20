@@ -60,6 +60,9 @@ class PiiHookTestCase(unittest.TestCase):
         (self.repo / "hooks").mkdir(parents=True, exist_ok=True)
         shutil.copy2(REAL_HOOK, self.repo / "hooks" / "pre-commit")
         os.chmod(self.repo / "hooks" / "pre-commit", 0o755)
+        scripts = self.repo / "scripts"
+        scripts.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(PROJECT_ROOT / "scripts" / "check_file_size.py", scripts / "check_file_size.py")
 
         self._run(["git", "config", "core.hooksPath", "hooks"])
 
@@ -108,6 +111,9 @@ class TestKnownPiiPatternBlocked(PiiHookTestCase):
 
         self.assertNotEqual(result.returncode, 0, result.stderr)
         self.assertIn("BLOCKED", result.stderr)
+        self.assertIn("Matching added-line count: 1", result.stderr)
+        self.assertNotIn("zzsecrettoken", result.stdout + result.stderr)
+        self.assertNotIn("leaked", result.stdout + result.stderr)
 
 
 class TestPlusLeadingContentBlocked(PiiHookTestCase):

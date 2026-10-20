@@ -1,52 +1,43 @@
 # Git hooks
 
-Version-controlled git hooks for this repository. The primary hook is a
-**pre-commit PII guard** that blocks any staged content matching known
-sensitive patterns — see the project's top-level `README.md` for the
-"No PII in the project" rule.
+Version-controlled Git hooks for this repository. Install them on a clone with
+`./scripts/install-hooks.sh`; the helper sets `core.hooksPath=hooks` for this
+clone only.
 
-## One-time installation
+## pre-commit
 
-After cloning (or after running `git init` fresh):
+The hook runs three fast checks against staged content:
 
-```bash
-git config core.hooksPath hooks
-```
+1. scripts/check_file_size.py --staged warns above 500 lines and blocks source
+   files above 800 lines unless .file-size-exceptions has a reasoned entry.
+   Exceptions are read from the index; changing the exceptions file rechecks all
+   tracked source files. The checker uses Git's NUL-separated paths and staged
+   blobs.
+2. Ruff checks staged Python blobs for unused imports (F401), so an unstaged
+   working-tree fix cannot hide a staged error. A machine without Ruff skips
+   this check with a notice. An intentional re-export carries
+   # noqa: F401 - <who uses it>.
+3. The PII guard scans added text lines against pii-patterns.txt and, when
+   present, pii-patterns.local.txt. The local file contains real identifiers,
+   stays gitignored, and cannot be staged. Matched content is never echoed;
+   failures show a line count. Ruff's raw output is suppressed; failures report
+   the file name, category and exit status.
 
-That tells git to look in this directory for all hooks. The setting is
-recorded in `.git/config` for this clone only — no global side effects.
-Verify with:
+The size checker and PII guard fail closed when they cannot inspect the index or
+required inputs. If the hook blocks, fix the staged content; do not bypass it
+with --no-verify.
 
-```bash
-git config core.hooksPath
-# → hooks
-```
+## pre-push
 
-## Hooks
+Runs `venv/bin/python -m unittest discover -v` from the repository root before
+Git updates a remote ref. A missing project interpreter or failing test suite
+blocks the push and prints an actionable error. The hook performs no install,
+network, model-server, or GUI work.
 
-### `pre-commit`
+## Privacy patterns
 
-Scans the staged diff for patterns from `pii-patterns.txt`. The check looks
-only at ADDED lines (`^\+[^+]`), so removing forbidden content does not
-trigger the guard. Typical runtime is well under a second.
-
-It also runs `ruff check --select F401` on staged `*.py` files, so unused imports
-(including leftover re-exports) cannot regrow. An intentional re-export carries
-`# noqa: F401 - <who uses it>`. Without `ruff` on PATH the step is skipped with a notice.
-
-If the hook blocks, **fix the staged content**. Do NOT use `--no-verify`
-as a workaround — the entire point of the guard is to keep PII out of
-commit history, and bypassing it defeats that purpose.
-
-### `pii-patterns.txt` and `pii-patterns.local.txt`
-
-One case-insensitive `grep -E` pattern per non-comment line. The tracked
-`pii-patterns.txt` holds only generic patterns that identify no one. Real
-names, case identifiers and client identifiers go in the gitignored
-`pii-patterns.local.txt`, which the hook and `scripts/scan-pii.sh` load when it
-exists. A fresh clone without it runs on the generic patterns and prints a
-notice. The hook blocks any commit that stages the local file, and the scanner
-fails if it is tracked.
-
-When you discover a new leak vector, add a pattern to the local file and scrub
-the existing content in the same commit.
+One case-insensitive grep -E pattern per non-comment line. The tracked
+pii-patterns.txt holds only generic patterns. Real names, case identifiers,
+and client identifiers belong in the gitignored pii-patterns.local.txt. A
+fresh clone without that local file runs only the generic patterns and prints
+a notice.

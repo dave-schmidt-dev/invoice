@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Run the isolated headless unittest suite before updating a remote ref.
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+python="$repo_root/venv/bin/python"
+echo "[pre-push] Running unittest discovery from $repo_root"
+if [[ ! -x "$python" ]]; then
+    echo "[pre-push] BLOCKED: project interpreter is missing or not executable: $python" >&2
+    echo "[pre-push] Create the project venv and install its declared test dependencies before pushing." >&2
+    exit 1
+fi
+
+cd "$repo_root"
+if "$python" -m unittest discover -v; then
+    echo "[pre-push] Unittest discovery passed."
+else
+    status=$?
+    echo "[pre-push] BLOCKED: unittest discovery failed with exit $status." >&2
+    exit "$status"
+fi
