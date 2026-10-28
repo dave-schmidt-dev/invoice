@@ -10,6 +10,36 @@ import zd
 from invoice_ledger import update_ledger_rows
 
 
+def _mark_billed(conn, table, ids, set_clause, set_params):
+    """Set ``set_clause`` on exactly ``ids`` that are still unbilled.
+
+    Raises ClickException if any id was billed (or deleted) since it was
+    priced, so the surrounding transaction rolls back instead of committing an
+    invoice whose total does not match the rows it claims.
+    """
+    if not ids:
+        return
+    if table not in ("sessions", "expenses"):
+        raise ValueError(f"unexpected table {table!r}")
+    # Chunked to stay under SQLite's bound-parameter limit.
+    updated = 0
+    for i in range(0, len(ids), 500):
+        chunk = ids[i:i + 500]
+        marks = ",".join("?" * len(chunk))
+        cur = conn.execute(
+            f"UPDATE {table} SET {set_clause} "
+            f"WHERE id IN ({marks}) AND invoice_id IS NULL",
+            [*set_params, *chunk],
+        )
+        updated += cur.rowcount
+    if updated != len(ids):
+        raise click.ClickException(
+            f"{len(ids) - updated} of {len(ids)} {table} changed while the "
+            "invoice was being prepared (billed by another run?). Nothing was "
+            "committed; re-run `zd invoice`."
+        )
+
+
 @zd.cli.command("invoice")
 @click.argument("client", shell_complete=zd._complete_client)
 @click.option("--date", "invoice_date", default=None, help="Invoice date YYYY-MM-DD (default: today)")
@@ -657,23 +687,23 @@ def cmd_invoice(client, invoice_date, invoice_month, summarize_weeks, flat_amoun
             ).fetchone()
             inv_id = inv_row["id"]
 
-            update_session_query = (
-                "UPDATE sessions SET invoice_id = ?, billed_rate = ? "
-                "WHERE client_id = ? AND invoice_id IS NULL"
+            # Mark billed by the EXACT ids that were priced and shown at the
+            # "Proceed?" prompt, never by the client/date predicate: rows logged
+            # or edited while the prompt was open must not be swept onto (or
+            # off) this invoice. Every priced row must still be unbilled; a
+            # shortfall means another writer billed it first, so abort (the
+            # except below rolls back and removes the temp PDF).
+            _mark_billed(
+                conn, "sessions", [s["id"] for s in sessions],
+                "invoice_id = ?, billed_rate = ?", [inv_id, float(c["rate"])],
             )
-            update_session_params = [inv_id, float(c["rate"]), c["id"]]
-            update_expense_query = "UPDATE expenses SET invoice_id = ? WHERE client_id = ? AND invoice_id IS NULL"
-            update_expense_params = [inv_id, c["id"]]
-            if month_start is not None and month_end is not None:
-                update_session_query += " AND work_date >= ? AND work_date < ?"
-                update_session_params.extend([month_start, month_end])
-                update_expense_query += " AND expense_date >= ? AND expense_date < ?"
-                update_expense_params.extend([month_start, month_end])
-            conn.execute(update_session_query, update_session_params)
             # CR-9: a flat invoice does NOT consume expenses — leave all
             # reimbursable expenses unbilled so they can go on a normal invoice.
             if not flat_mode:
-                conn.execute(update_expense_query, update_expense_params)
+                _mark_billed(
+                    conn, "expenses", [e["id"] for e in expenses],
+                    "invoice_id = ?", [inv_id],
+                )
 
             conn.commit()
             committed = True
