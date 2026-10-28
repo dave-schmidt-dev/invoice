@@ -169,6 +169,9 @@ zd invoice acme --flat 1500 --description "Monthly retainer, April 2026"
 
 # Regenerate an existing invoice (e.g. after fixing config or editing sessions)
 zd invoice acme --regenerate 2026-0002
+# Invoices billed before rate snapshots are refused if the client rate changed;
+# --reprice accepts repricing them at the current rate
+zd invoice acme --regenerate 2025-0007 --reprice
 
 # Mark paid when check arrives (records today's date, or pass --date)
 zd paid 2026-0001
@@ -380,8 +383,9 @@ the repo, a backup that syncs to a shared location, or a paste buffer.
 - `zd_cmd_records.py`: zd commands for clients, sessions and expenses.
 - `zd_cmd_ledger.py`: zd commands for reconcile, status, paid, backfill and shell completion.
 - `zd_cmd_invoice.py`: The zd invoice command.
+- `zd_billing.py`: Billing helpers for `zd invoice`: id-exact mark-billed and `--flat` validation.
 - `cli_logging.py`: The 0600 rotating file-logger bootstrap shared by `zd.py` and `invoice.py`.
-- `invoice_ledger.py`: CSV ledger, file locking, atomic writes, invoice-number helpers and the read-only zd-DB lookup used by `invoice.py status`.
+- `invoice_ledger.py`: CSV ledger, file locking, atomic writes, invoice-number helpers and the read-only zd-DB lookups used by `invoice.py status` and `invoice.py new`.
 - `invoice_input.py`: Money parsing, interactive input and file-opening helpers for invoice.py.
 - `invoice_pdf.py`: PDF layout and rendering for invoice.py.
 

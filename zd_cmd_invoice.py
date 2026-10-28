@@ -3,41 +3,12 @@
 import logging
 import os
 from datetime import date
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from pathlib import Path
 import click
 import zd
 from invoice_ledger import update_ledger_rows
-
-
-def _mark_billed(conn, table, ids, set_clause, set_params):
-    """Set ``set_clause`` on exactly ``ids`` that are still unbilled.
-
-    Raises ClickException if any id was billed (or deleted) since it was
-    priced, so the surrounding transaction rolls back instead of committing an
-    invoice whose total does not match the rows it claims.
-    """
-    if not ids:
-        return
-    if table not in ("sessions", "expenses"):
-        raise ValueError(f"unexpected table {table!r}")
-    # Chunked to stay under SQLite's bound-parameter limit.
-    updated = 0
-    for i in range(0, len(ids), 500):
-        chunk = ids[i:i + 500]
-        marks = ",".join("?" * len(chunk))
-        cur = conn.execute(
-            f"UPDATE {table} SET {set_clause} "
-            f"WHERE id IN ({marks}) AND invoice_id IS NULL",
-            [*set_params, *chunk],
-        )
-        updated += cur.rowcount
-    if updated != len(ids):
-        raise click.ClickException(
-            f"{len(ids) - updated} of {len(ids)} {table} changed while the "
-            "invoice was being prepared (billed by another run?). Nothing was "
-            "committed; re-run `zd invoice`."
-        )
+from zd_billing import mark_billed, parse_flat_total
 
 
 @zd.cli.command("invoice")
@@ -76,7 +47,16 @@ def _mark_billed(conn, table, ids, set_clause, set_params):
     help="Line-item description for a --flat invoice (required with --flat).",
 )
 @click.option("--regenerate", default=None, help="Regenerate PDF for an existing invoice number")
-def cmd_invoice(client, invoice_date, invoice_month, summarize_weeks, flat_amount, flat_description, regenerate):
+@click.option(
+    "--reprice",
+    is_flag=True,
+    help=(
+        "With --regenerate: allow the invoice total to change when legacy "
+        "sessions (no snapshotted billed_rate) are repriced at the client's "
+        "current rate. Without it such a regenerate is refused."
+    ),
+)
+def cmd_invoice(client, invoice_date, invoice_month, summarize_weeks, flat_amount, flat_description, regenerate, reprice):
     """Generate an invoice PDF for all unbilled sessions of a client.
 
     \b
@@ -106,36 +86,10 @@ def cmd_invoice(client, invoice_date, invoice_month, summarize_weeks, flat_amoun
     # Validate flags up front, before any DB/PDF work, so a bad combination
     # fails fast with a clear message and no side effects.
     flat_mode = flat_amount is not None
-    flat_total = None
-    if flat_mode:
-        if summarize_weeks:
-            raise click.ClickException(
-                "--flat cannot be combined with --summarize-weeks "
-                "(a flat invoice has no weekly line items to summarize)."
-            )
-        if not flat_description or not flat_description.strip():
-            raise click.ClickException("--flat requires --description \"...\".")
-        # Money via Decimal; reject non-finite and non-positive amounts (INV-4).
-        try:
-            parsed = Decimal(str(flat_amount))
-        except (InvalidOperation, ValueError):
-            raise click.ClickException(
-                f"--flat amount must be a number, got '{flat_amount}'."
-            )
-        if not parsed.is_finite():
-            raise click.ClickException("--flat amount must be finite (not inf/nan).")
-        # A finite Decimal can still exceed the default 28-digit context and
-        # blow up quantize() with InvalidOperation (e.g. 1e999, or a fat-fingered
-        # 40-digit paste). Catch it here so it fails as a clean ClickException
-        # rather than a raw traceback — no real invoice is anywhere near this.
-        try:
-            flat_total = zd.to_money(parsed)
-        except InvalidOperation:
-            raise click.ClickException(
-                f"--flat amount is too large to bill: '{flat_amount}'."
-            )
-        if flat_total <= 0:
-            raise click.ClickException("--flat amount must be greater than 0.")
+    flat_total = (
+        parse_flat_total(flat_amount, flat_description, summarize_weeks, zd.to_money)
+        if flat_mode else None
+    )
 
     # --- Load invoice.py config and machinery ---
     try:
@@ -322,6 +276,24 @@ def cmd_invoice(client, invoice_date, invoice_month, summarize_weeks, flat_amoun
                     click.echo(f"  Expenses: ${total_exp:,.2f}")
             click.echo(f"  Total: ${total:,.2f}")
 
+            # INV-3: never move a billed total without the owner saying so. A
+            # legacy session (no billed_rate snapshot) is repriced at TODAY's
+            # rate, so if that changes the total, refuse unless --reprice.
+            stored_total = zd.to_money(str(inv_row["total"]))
+            if total != stored_total:
+                click.echo(
+                    f"  Stored total ${stored_total:,.2f} -> recomputed ${total:,.2f} "
+                    f"(change ${total - stored_total:+,.2f})",
+                    err=True,
+                )
+                if legacy_sessions and not reprice:
+                    raise click.ClickException(
+                        f"Invoice {invoice_number} has sessions billed before rate "
+                        "snapshots, so regenerating would reprice them at the "
+                        "current client rate and change the billed total. Nothing "
+                        "was changed. Re-run with --reprice to accept the new total."
+                    )
+
             if not click.confirm("\n  Proceed?"):
                 click.echo("  Cancelled.")
                 return
@@ -384,25 +356,35 @@ def cmd_invoice(client, invoice_date, invoice_month, summarize_weeks, flat_amoun
                 raise
 
             # Step 4 — patch the CSV ledger row atomically. Back up the ledger
-            # first (INV-6) so the pre-edit state is recoverable.
+            # first (INV-6) so the pre-edit state is recoverable. The patch only
+            # counts if it actually matched this invoice's row.
             csv_file = str(inv_mod._ledger_path_from_config(config))
             csv_path = Path(csv_file)
+            csv_ok = True
             if csv_path.exists():
                 try:
-                    update_ledger_rows(
+                    matched = update_ledger_rows(
                         csv_path,
                         {invoice_number: {"total": f"{float(actual_total):.2f}", "pdf_file": pdf_path}},
                         backup=zd._backup_file,
                         write_unmatched=True,
                     )
+                    if invoice_number not in matched:
+                        raise ValueError(f"no ledger row for {invoice_number}")
                 except Exception as e:
-                    click.echo(f"  ⚠  Could not update CSV ledger: {e}")
+                    csv_ok = False
+                    click.echo(
+                        f"  ⚠  Could not update the CSV ledger row for {invoice_number}: {e}",
+                        err=True,
+                    )
 
-            # Step 5 — remove the OLD PDF only if the path changed. A delete
-            # failure here must NEVER crash: the ledgers are already updated, so
-            # warn and continue (a stale extra PDF is harmless).
+            # Step 5 — remove the OLD PDF only if the path changed AND the CSV
+            # was repointed at the new one (otherwise the CSV still references
+            # the old file, which may be the only copy the ledger knows). A
+            # delete failure must NEVER crash: the ledgers are already updated,
+            # so warn and continue (a stale extra PDF is harmless).
             old_path = inv_row["pdf_path"]
-            if old_path and old_path != pdf_path and Path(old_path).exists():
+            if csv_ok and old_path and old_path != pdf_path and Path(old_path).exists():
                 try:
                     Path(old_path).unlink()
                 except OSError as e:
@@ -410,6 +392,17 @@ def cmd_invoice(client, invoice_date, invoice_month, summarize_weeks, flat_amoun
                         f"  ⚠  Could not remove the old PDF ({old_path}): {e}",
                         err=True,
                     )
+
+            if not csv_ok:
+                click.echo(
+                    f"  ✗  Invoice {invoice_number} was regenerated in the zd DB and "
+                    f"PDF ({pdf_path}), but the CSV ledger was NOT updated"
+                    + (f"; the previous PDF was kept at {old_path}." if old_path and old_path != pdf_path else ".")
+                    + " Fix the ledger row, then run `zd reconcile`.",
+                    err=True,
+                )
+                zd._worklog(f"- [zd invoice] {invoice_date} | {invoice_number} | {c['name']} | ${actual_total:,.2f} | regenerated, CSV NOT updated")
+                raise click.exceptions.Exit(1)
 
             click.echo(f"\n  ✓  Invoice {invoice_number} regenerated: {pdf_path}")
             click.echo(f"  ✓  Total: ${actual_total:,.2f}")
@@ -701,14 +694,14 @@ def cmd_invoice(client, invoice_date, invoice_month, summarize_weeks, flat_amoun
             # off) this invoice. Every priced row must still be unbilled; a
             # shortfall means another writer billed it first, so abort (the
             # except below rolls back and removes the temp PDF).
-            _mark_billed(
+            mark_billed(
                 conn, "sessions", [s["id"] for s in sessions],
                 "invoice_id = ?, billed_rate = ?", [inv_id, float(c["rate"])],
             )
             # CR-9: a flat invoice does NOT consume expenses — leave all
             # reimbursable expenses unbilled so they can go on a normal invoice.
             if not flat_mode:
-                _mark_billed(
+                mark_billed(
                     conn, "expenses", [e["id"] for e in expenses],
                     "invoice_id = ?", [inv_id],
                 )
