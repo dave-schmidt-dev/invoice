@@ -30,7 +30,7 @@ from invoice_ledger import (  # noqa: E402,F401 - moved to invoice_ledger.py
     CSV_HEADERS, _sanitize_filename_component, _validate_invoice_number, _csv_safe,
     _file_lock, _atomic_write_json, _read_csv_with_headers, _csv_field_key,
     _atomic_write_csv, get_next_invoice_number, _invoice_number_exists,
-    zd_db_tracks_invoice, update_ledger_rows, default_config_file,
+    zd_db_tracks_invoice, zd_db_fail_closed, update_ledger_rows, default_config_file,
     _MAX_BACKUPS, _backed_up_this_run, _backup_file,
 )
 from invoice_input import (  # noqa: E402,F401 - moved to invoice_input.py
@@ -478,7 +478,7 @@ def cmd_new(invoice_date):
     csv_file = str(_ledger_path_from_config(config_data))
     invoices_dir = str(_invoices_dir_from_config(config_data))
 
-    default_invoice_number = get_next_invoice_number(csv_file)
+    default_invoice_number = zd_db_fail_closed(get_next_invoice_number, csv_file, _zd_db_path())
     invoice_number = default_invoice_number
     if invoice_date is None:
         invoice_date = date.today().isoformat()
@@ -577,6 +577,19 @@ def cmd_new(invoice_date):
             f"Invoice number '{invoice_number}' already exists in {csv_file}. "
             "Choose a different invoice number."
         )
+    # zd commits its DB row (and PDF) before it projects the CSV row, so the
+    # CSV alone cannot prove a number is free: also refuse numbers the zd DB
+    # holds, and never replace a PDF that already sits at the final path.
+    if zd_db_fail_closed(zd_db_tracks_invoice, _zd_db_path(), invoice_number):
+        raise click.ClickException(
+            f"Invoice number '{invoice_number}' already exists in the zd "
+            "database. Choose a different invoice number."
+        )
+    if Path(pdf_path).exists():
+        raise click.ClickException(
+            f"A PDF already exists at {pdf_path}. Refusing to overwrite it; "
+            "choose a different invoice number."
+        )
 
     temp_pdf_path = f"{pdf_path}.tmp-{os.getpid()}"
     try:
@@ -584,6 +597,10 @@ def cmd_new(invoice_date):
             invoice_number, invoice_date, config_data, line_items, temp_pdf_path,
             client=client, payment_terms=payment_terms, payment_description=payment_description,
         )
+        if os.path.exists(pdf_path):  # re-check just before the swap (concurrent run)
+            raise click.ClickException(
+                f"A PDF already exists at {pdf_path}. Refusing to overwrite it."
+            )
         os.replace(temp_pdf_path, pdf_path)
     except BaseException:
         # Clean up the temp PDF on any failure before it is placed atomically.

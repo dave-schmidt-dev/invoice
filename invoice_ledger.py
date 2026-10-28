@@ -220,30 +220,34 @@ def _atomic_write_csv(path, rows, fieldnames, default_mode=0o600):
                 pass
 
 
-def get_next_invoice_number(csv_file):
-    """Return the next invoice number in format YYYY-#### (last known + 1, starting at 1)."""
+def get_next_invoice_number(csv_file, zd_db_path=None):
+    """Return the next invoice number in format YYYY-#### (last known + 1, starting at 1).
+
+    The CSV ledger and, when ``zd_db_path`` is given, the zd DB both count: zd
+    commits its DB row before the CSV projection, so numbering from the CSV
+    alone can reuse a number zd has already issued.
+    """
     current_year = date.today().year
     csv_path = Path(csv_file)
-    
-    if not csv_path.exists():
-        return f"{current_year}-0001"
 
     last_num = 0
-    with _file_lock(csv_path):
-        rows, file_headers = _read_csv_with_headers(csv_path)
-        inv_key = _csv_field_key(file_headers, "invoice_number") or "invoice_number"
-        for row in rows:
-            try:
-                # Extract number from YYYY-#### format
-                invoice_str = row.get(inv_key) or ""
-                if "-" in invoice_str:
-                    year_part, num_part = invoice_str.split("-", 1)
-                    if year_part == str(current_year):
-                        num = int(num_part)
-                        if num > last_num:
-                            last_num = num
-            except (ValueError, KeyError, TypeError):
-                pass
+    rows, file_headers = [], []
+    if csv_path.exists():
+        with _file_lock(csv_path):
+            rows, file_headers = _read_csv_with_headers(csv_path)
+    inv_key = _csv_field_key(file_headers, "invoice_number") or "invoice_number"
+    numbers = [row.get(inv_key) or "" for row in rows]
+    if zd_db_path is not None:
+        numbers.extend(zd_db_invoice_numbers(zd_db_path, f"{current_year}-"))
+    for invoice_str in numbers:
+        try:
+            # Extract number from YYYY-#### format
+            if "-" in invoice_str:
+                year_part, num_part = invoice_str.split("-", 1)
+                if year_part == str(current_year):
+                    last_num = max(last_num, int(num_part))
+        except (ValueError, KeyError, TypeError):
+            pass
 
     return f"{current_year}-{last_num + 1:04d}"
 
@@ -270,6 +274,43 @@ def _invoice_number_exists(csv_file, invoice_number):
     return False
 
 
+def _zd_db_query(db_path, sql, params):
+    """Run a read-only query against the zd DB; [] if the DB or table is absent."""
+    db_path = Path(db_path)
+    if not db_path.exists():
+        return []
+    conn = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True)
+    try:
+        return conn.execute(sql, params).fetchall()
+    except sqlite3.OperationalError as exc:
+        if "no such table" in str(exc):
+            return []
+        raise
+    finally:
+        conn.close()
+
+
+def zd_db_invoice_numbers(db_path, prefix=""):
+    """Return invoice numbers in the zd DB that start with ``prefix``."""
+    rows = _zd_db_query(
+        db_path,
+        "SELECT invoice_number FROM invoices WHERE substr(invoice_number, 1, ?) = ?",
+        (len(prefix), prefix),
+    )
+    return [r[0] or "" for r in rows]
+
+
+def zd_db_fail_closed(func, *args):
+    """Call a zd-DB reader; an unreadable DB aborts instead of letting a write proceed."""
+    try:
+        return func(*args)
+    except sqlite3.Error as exc:
+        raise click.ClickException(
+            f"Could not check the zd database ({type(exc).__name__}); refusing "
+            "to continue so invoice.py cannot duplicate or diverge from zd."
+        )
+
+
 def zd_db_tracks_invoice(db_path, invoice_number):
     """Return True if the zd DB at db_path already holds invoice_number.
 
@@ -282,22 +323,12 @@ def zd_db_tracks_invoice(db_path, invoice_number):
     propagates so the caller can fail closed rather than diverge the two
     records.
     """
-    db_path = Path(db_path)
-    if not db_path.exists():
-        return False
-    conn = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True)
-    try:
-        row = conn.execute(
-            "SELECT 1 FROM invoices WHERE invoice_number = ? LIMIT 1",
-            (invoice_number,),
-        ).fetchone()
-    except sqlite3.OperationalError as exc:
-        if "no such table" in str(exc):
-            return False
-        raise
-    finally:
-        conn.close()
-    return row is not None
+    rows = _zd_db_query(
+        db_path,
+        "SELECT 1 FROM invoices WHERE invoice_number = ? LIMIT 1",
+        (invoice_number,),
+    )
+    return bool(rows)
 
 
 def update_ledger_rows(csv_path, updates, *, backup=None, first_match_only=True,

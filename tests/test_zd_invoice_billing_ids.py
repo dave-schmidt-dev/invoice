@@ -92,6 +92,23 @@ class BillExactlyPricedRowsTests(ZdInvoiceFixtureMixin, unittest.TestCase):
             leftovers = list((Path(tmpdir) / "invoices").glob("*"))
             self.assertEqual(leftovers, [], "temp/final PDF must not remain")
 
+    def test_existing_pdf_at_final_path_is_not_overwritten(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._seed_invoice_data(tmpdir)
+            pdf = Path(tmpdir) / "invoices" / "Acme_Corp_Invoice_2026-0001.pdf"
+            pdf.parent.mkdir()
+            pdf.write_bytes(b"%PDF other tool original\n")
+
+            result = CliRunner().invoke(
+                zd.cli, ["invoice", "acme", "--date", "2026-04-30"], input="y\n"
+            )
+
+            self.assertNotEqual(result.exit_code, 0, msg=result.output)
+            self.assertEqual(pdf.read_bytes(), b"%PDF other tool original\n")
+            with zd.get_conn() as conn:
+                n = conn.execute("SELECT COUNT(*) AS n FROM invoices").fetchone()["n"]
+            self.assertEqual(n, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

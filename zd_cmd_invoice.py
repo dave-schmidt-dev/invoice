@@ -651,6 +651,14 @@ def cmd_invoice(client, invoice_date, invoice_month, summarize_weeks, flat_amoun
         pdf_filename = f"{client_slug}_Invoice_{safe_num}.pdf"
         pdf_path = str(Path(invoices_dir) / pdf_filename)
         temp_pdf = f"{pdf_path}.tmp-{os.getpid()}"
+        # A brand-new invoice must never replace an existing PDF (for example
+        # one from invoice.py new that the CSV did not yet show). Checked before
+        # the DB commit so the refusal leaves nothing half-written.
+        if Path(pdf_path).exists():
+            raise click.ClickException(
+                f"A PDF already exists at {pdf_path}. Refusing to overwrite it; "
+                "resolve the existing file before invoicing."
+            )
 
         committed = False
         try:
