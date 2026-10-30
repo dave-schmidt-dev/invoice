@@ -1,14 +1,15 @@
 """The zd invoice command. zd-owned names are looked up on the zd module at call time."""
 
 import logging
-import os
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
 import click
 import zd
-from invoice_ledger import update_ledger_rows
-from zd_billing import mark_billed, parse_flat_total
+from zd_billing import parse_flat_total
+from zd_invoice_write import (
+    check_number_available, render_invoice, reserve_invoice, write_projection,
+)
 
 
 @zd.cli.command("invoice")
@@ -298,100 +299,26 @@ def cmd_invoice(client, invoice_date, invoice_month, summarize_weeks, flat_amoun
                 click.echo("  Cancelled.")
                 return
 
-            # ------------------------------------------------------------------
-            # Durable write ordering (INV-2 / INV-6, mirrors the new-invoice
-            # path). The customer-facing PDF is placed atomically BEFORE the
-            # ledgers are updated, and no delete can crash after the ledgers
-            # change:
-            #   1. Render to a TEMP PDF (never the final path).
-            #   2. os.replace -> final PDF (atomic).
-            #   3. UPDATE invoices + explicit conn.commit() (point of no return).
-            #   4. Patch the CSV ledger row atomically, backing it up first.
-            #   5. Delete the OLD PDF only if the path changed, guarded so a
-            #      delete failure can never crash after the ledgers are updated.
-            # ------------------------------------------------------------------
-            invoices_dir = str(inv_mod._invoices_dir_from_config(config))
-            Path(invoices_dir).mkdir(parents=True, exist_ok=True)
-            client_slug = inv_mod._sanitize_filename_component(c["name"], "Client")
-            safe_num = inv_mod._sanitize_filename_component(invoice_number, "invoice")
-            pdf_filename = f"{client_slug}_Invoice_{safe_num}.pdf"
-            pdf_path = str(Path(invoices_dir) / pdf_filename)
-            temp_pdf = f"{pdf_path}.tmp-{os.getpid()}"
-
-            # Step 1 — render to the temp path.
-            committed = False
-            try:
-                actual_total = inv_mod.generate_pdf(
-                    invoice_number, invoice_date, config, line_items, temp_pdf,
-                    client=matched_client, payment_terms="Net 30",
-                )
-
-                # For a flat invoice the persisted total is immutable: keep the
-                # stored figure regardless of what generate_pdf computed from the
-                # (hours-priced) line items.
-                if billing_mode == "flat":
-                    actual_total = total
-
-                # Step 2 — promote the temp PDF to its final path atomically
-                # BEFORE any ledger mutation.
-                os.replace(temp_pdf, pdf_path)
-
-                # Step 3 — explicit transaction for the DB ledger. Do not rely on
-                # the implicit block-exit commit; make the point of no return
-                # explicit and ordered after the PDF is in place.
-                conn.execute(
-                    "UPDATE invoices SET total = ?, pdf_path = ? WHERE id = ?",
-                    (float(actual_total), pdf_path, inv_id),
-                )
-                conn.commit()
-                committed = True
-            except BaseException:
-                # Failure BEFORE the commit: clean up the temp PDF (guarded) and
-                # re-raise. Nothing durable to the ledgers has changed yet.
-                if not committed:
-                    try:
-                        os.remove(temp_pdf)
-                    except OSError:
-                        pass
-                raise
-
-            # Step 4 — patch the CSV ledger row atomically. Back up the ledger
-            # first (INV-6) so the pre-edit state is recoverable. The patch only
-            # counts if it actually matched this invoice's row.
-            csv_file = str(inv_mod._ledger_path_from_config(config))
-            csv_path = Path(csv_file)
-            csv_ok = True
-            if csv_path.exists():
-                try:
-                    matched = update_ledger_rows(
-                        csv_path,
-                        {invoice_number: {"total": f"{float(actual_total):.2f}", "pdf_file": pdf_path}},
-                        backup=zd._backup_file,
-                        write_unmatched=True,
-                    )
-                    if invoice_number not in matched:
-                        raise ValueError(f"no ledger row for {invoice_number}")
-                except Exception as e:
-                    csv_ok = False
-                    click.echo(
-                        f"  ⚠  Could not update the CSV ledger row for {invoice_number}: {e}",
-                        err=True,
-                    )
-
-            # Step 5 — remove the OLD PDF only if the path changed AND the CSV
-            # was repointed at the new one (otherwise the CSV still references
-            # the old file, which may be the only copy the ledger knows). A
-            # delete failure must NEVER crash: the ledgers are already updated,
-            # so warn and continue (a stale extra PDF is harmless).
+            rendered = render_invoice(
+                inv_mod, config, c["name"], matched_client, invoice_number,
+                invoice_date, line_items,
+                fixed_total=total if billing_mode == "flat" else None,
+            )
+            reserve_invoice(conn, rendered, c, sessions, expenses, existing_id=inv_id)
             old_path = inv_row["pdf_path"]
-            if csv_ok and old_path and old_path != pdf_path and Path(old_path).exists():
-                try:
-                    Path(old_path).unlink()
-                except OSError as e:
-                    click.echo(
-                        f"  ⚠  Could not remove the old PDF ({old_path}): {e}",
-                        err=True,
-                    )
+            outcome = write_projection(
+                inv_mod, config, matched_client, line_items, rendered,
+                regenerate=True, old_path=old_path,
+            )
+            actual_total, pdf_path = rendered.total, rendered.pdf_path
+            csv_ok = outcome.csv_updated
+            if not outcome.pdf_finalized:
+                click.echo(
+                    f"  ✗  Invoice {invoice_number} is recorded in the zd DB but its "
+                    "PDF/CSV projection is incomplete; the previous PDF was kept. "
+                    "Run --regenerate again to repair.", err=True,
+                )
+                raise click.exceptions.Exit(1)
 
             if not csv_ok:
                 click.echo(
@@ -591,188 +518,25 @@ def cmd_invoice(client, invoice_date, invoice_month, summarize_weeks, flat_amoun
             click.echo("  Cancelled.")
             return
 
-        # ------------------------------------------------------------------
-        # DB-authoritative write ordering (INV-2 / INV-5).
-        #
-        # The SQLite COMMIT is the single point of no return. Before it the
-        # ONLY durable artifact we create is a TEMP PDF at a non-final path,
-        # which can never overwrite an existing invoice and is deleted on
-        # rollback. The final PDF (via os.replace) and the CSV ledger row are
-        # written ONLY after the commit, so a crash before the commit leaves
-        # nothing durable behind and the sessions stay unbilled — no
-        # double-billing on rerun. See plan §A1.
-        # ------------------------------------------------------------------
+        # Render -> reserve in the authoritative DB -> project PDF/CSV.
+        check_number_available(conn, inv_mod, csv_file, invoice_number)
+        rendered = render_invoice(
+            inv_mod, config, c["name"], matched_client, invoice_number,
+            invoice_date, line_items, fixed_total=flat_total if flat_mode else None,
+            new=True,
+        )
+        reserve_invoice(conn, rendered, c, sessions, expenses, flat=flat_mode)
+        outcome = write_projection(inv_mod, config, matched_client, line_items, rendered)
+        actual_total, pdf_path = rendered.total, rendered.pdf_path
 
-        # Step 1 — Under the ledger file lock, prove the chosen invoice number
-        # is absent from BOTH the CSV ledger AND the zd DB before any durable
-        # write (closes INV-5). The DB check is cheap and non-durable; holding
-        # the ledger lock only for these reads keeps PDF generation and the DB
-        # txn out from under the lock (save_to_csv re-locks + re-checks later
-        # as the backstop).
-        csv_path = Path(csv_file)
-        with inv_mod._file_lock(csv_path):
-            if csv_path.exists():
-                ledger_rows, ledger_headers = inv_mod._read_csv_with_headers(csv_path)
-                ledger_inv_key = (
-                    inv_mod._csv_field_key(ledger_headers, "invoice_number")
-                    or "invoice_number"
-                )
-                ledger_numbers = {str(r.get(ledger_inv_key, "")) for r in ledger_rows}
-            else:
-                ledger_numbers = set()
-            if invoice_number in ledger_numbers:
-                raise click.ClickException(
-                    f"Invoice number '{invoice_number}' already exists in the CSV "
-                    f"ledger ({csv_path}). Refusing to write a duplicate."
-                )
-            db_dup = conn.execute(
-                "SELECT 1 FROM invoices WHERE invoice_number = ?", (invoice_number,)
-            ).fetchone()
-            if db_dup:
-                raise click.ClickException(
-                    f"Invoice number '{invoice_number}' already exists in the zd "
-                    "database. Refusing to write a duplicate."
-                )
 
-        # Step 2 — Render the PDF to a TEMP path in the invoices dir, NEVER the
-        # final path. A temp file at a non-final path can never clobber an
-        # existing invoice and is removed on rollback.
-        invoices_dir = str(inv_mod._invoices_dir_from_config(config))
-        Path(invoices_dir).mkdir(parents=True, exist_ok=True)
-        client_slug = inv_mod._sanitize_filename_component(c["name"], "Client")
-        safe_num = inv_mod._sanitize_filename_component(invoice_number, "invoice")
-        pdf_filename = f"{client_slug}_Invoice_{safe_num}.pdf"
-        pdf_path = str(Path(invoices_dir) / pdf_filename)
-        temp_pdf = f"{pdf_path}.tmp-{os.getpid()}"
-        # A brand-new invoice must never replace an existing PDF (for example
-        # one from invoice.py new that the CSV did not yet show). Checked before
-        # the DB commit so the refusal leaves nothing half-written.
-        if Path(pdf_path).exists():
-            raise click.ClickException(
-                f"A PDF already exists at {pdf_path}. Refusing to overwrite it; "
-                "resolve the existing file before invoicing."
-            )
-
-        committed = False
-        try:
-            actual_total = inv_mod.generate_pdf(
-                invoice_number, invoice_date, config, line_items, temp_pdf,
-                client=matched_client, payment_terms="Net 30",
-            )
-
-            # For a flat invoice the persisted total is immutable and equals the
-            # --flat AMOUNT, regardless of what generate_pdf computed from the
-            # line items (INV-4). Pin it here.
-            if flat_mode:
-                actual_total = flat_total
-
-            billing_mode = "flat" if flat_mode else "hourly"
-
-            # Step 3 — Explicit transaction. After this commit the DB is
-            # authoritative: the invoice exists and its sessions/expenses are
-            # billed. Snapshot the client's current rate into
-            # sessions.billed_rate so the billed amount is immutable against
-            # later rate changes (INV-3). For a flat invoice the rate snapshot
-            # is not used for pricing (the flat total is authoritative) but is
-            # still recorded for consistency.
-            conn.execute("BEGIN")
-            conn.execute(
-                """INSERT INTO invoices
-                       (invoice_number, client_id, invoice_date, total, status, pdf_path, billing_mode)
-                   VALUES (?,?,?,?,?,?,?)""",
-                (invoice_number, c["id"], invoice_date, float(actual_total),
-                 "Sent", pdf_path, billing_mode),
-            )
-            inv_row = conn.execute(
-                "SELECT id FROM invoices WHERE invoice_number = ?", (invoice_number,)
-            ).fetchone()
-            inv_id = inv_row["id"]
-
-            # Mark billed by the EXACT ids that were priced and shown at the
-            # "Proceed?" prompt, never by the client/date predicate: rows logged
-            # or edited while the prompt was open must not be swept onto (or
-            # off) this invoice. Every priced row must still be unbilled; a
-            # shortfall means another writer billed it first, so abort (the
-            # except below rolls back and removes the temp PDF).
-            mark_billed(
-                conn, "sessions", [s["id"] for s in sessions],
-                "invoice_id = ?, billed_rate = ?", [inv_id, float(c["rate"])],
-            )
-            # CR-9: a flat invoice does NOT consume expenses — leave all
-            # reimbursable expenses unbilled so they can go on a normal invoice.
-            if not flat_mode:
-                mark_billed(
-                    conn, "expenses", [e["id"] for e in expenses],
-                    "invoice_id = ?", [inv_id],
-                )
-
-            conn.commit()
-            committed = True
-        except BaseException:
-            # Failure BEFORE the commit: roll back the (uncommitted) DB work and
-            # delete the temp PDF. Nothing durable leaked — clean abort, no
-            # double-billing. Re-raise so the error surfaces.
-            if not committed:
-                try:
-                    conn.rollback()
-                except Exception:
-                    pass
-                try:
-                    os.remove(temp_pdf)
-                except OSError:
-                    pass
-            raise
-
-        # ------------------------------------------------------------------
-        # Past the commit: the DB is the safe-ahead authoritative store. Any
-        # failure projecting to the final PDF or CSV ledger must NOT crash and
-        # must NOT re-bill on rerun (sessions are already invoice_id != NULL).
-        # ------------------------------------------------------------------
-
-        # Step 4 — Promote the temp PDF to its final path (atomic rename; the
-        # final PDF appears only now).
-        pdf_finalized = True
-        try:
-            os.replace(temp_pdf, pdf_path)
-        except OSError as e:
-            pdf_finalized = False
-            click.echo(
-                "\n  ⚠  Invoice committed to the zd DB (authoritative), but the "
-                f"PDF could not be finalized: {e}"
-            )
-            click.echo(
-                "     The DB record is safe and the CSV row was NOT written, so the "
-                "ledger never references a missing PDF. Reproject from the DB to repair."
-            )
-            try:
-                os.remove(temp_pdf)
-            except OSError:
-                pass
-
-        # Step 5 — Append the CSV ledger row (status="Sent" to match the DB
-        # row). Written ONLY when the final PDF is in place, so a failed
-        # os.replace can never leave a ledger row pointing at a missing PDF.
-        # save_to_csv is atomic (read-all -> append -> os.replace) and
-        # re-checks for duplicates under its own lock as the backstop.
-        if pdf_finalized:
-            try:
-                inv_mod.save_to_csv(
-                    invoice_number, invoice_date, config, line_items,
-                    actual_total, pdf_path, client=matched_client, status="Sent",
-                )
-            except Exception as e:
-                click.echo(
-                    "\n  ⚠  Invoice committed to the zd DB (authoritative), but the "
-                    f"CSV ledger row could not be written: {e}"
-                )
-                click.echo(
-                    "     The DB record is safe; the CSV projection may need repair."
-                )
-
-    if pdf_finalized:
+    if outcome.pdf_finalized:
         click.echo(f"\n  ✓  Invoice {invoice_number} saved to: {pdf_path}")
         click.echo(f"  ✓  Total: ${actual_total:,.2f}")
-        click.echo(f"  ✓  Ledger updated.")
+        if outcome.csv_updated:
+            click.echo("  ✓  Ledger updated.")
+        else:
+            click.echo("  ⚠  CSV ledger NOT updated; run `zd reconcile --fix` to repair.")
         click.echo(f"\n  Run `zd paid {invoice_number}` when payment is received.\n")
     else:
         click.echo(

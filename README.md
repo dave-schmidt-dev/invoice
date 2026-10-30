@@ -235,6 +235,18 @@ reimbursable expenses are left unbilled for a normal invoice. `--flat` cannot
 be combined with `--summarize-weeks`. The amount is parsed as `Decimal` and
 rejected if it is non-positive or too large to represent as money.
 
+Both new invoices and regeneration render a temporary PDF, commit the authoritative
+DB transaction, then finalize the PDF and write the CSV projection. A failed DB
+commit leaves the previous PDF and ledger untouched. A failure after commit
+reports the incomplete projection; regenerate to retry a PDF failure, or use
+`zd reconcile --fix` for a missing CSV row. Regeneration retains an old PDF at
+a different path until the CSV row is successfully repointed. A missing CSV
+file or unmatched row is an incomplete regeneration, not success.
+
+New-invoice projection warnings retain their existing zero exit status because
+the invoice was committed; regeneration projection failures exit nonzero.
+CLI options, invoice numbering, database schema and existing clients are unchanged.
+
 ### Reconciling the ledger against the DB
 
 The zd SQLite database is authoritative; the CSV ledger is a projection that
@@ -383,6 +395,7 @@ the repo, a backup that syncs to a shared location, or a paste buffer.
 - `zd_cmd_records.py`: zd commands for clients, sessions and expenses.
 - `zd_cmd_ledger.py`: zd commands for reconcile, status, paid, backfill and shell completion.
 - `zd_cmd_invoice.py`: The zd invoice command.
+- `zd_invoice_write.py`: Shared temporary rendering, DB reservation/commit and explicit PDF/CSV projection outcomes for new invoices and regeneration.
 - `zd_billing.py`: Billing helpers for `zd invoice`: id-exact mark-billed and `--flat` validation.
 - `cli_logging.py`: The 0600 rotating file-logger bootstrap shared by `zd.py` and `invoice.py`.
 - `invoice_ledger.py`: CSV ledger, file locking, atomic writes, invoice-number helpers and the read-only zd-DB lookups used by `invoice.py status` and `invoice.py new`.

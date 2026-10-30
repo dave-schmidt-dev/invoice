@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/
 
 ### Fixed
 
+- Invoice generation and regeneration share explicit DB/PDF/CSV write outcomes. A failed regeneration DB commit preserves the previous PDF, and CSV failures no longer report a successful ledger update.
 - The local summary server's log (`--summarize-weeks`) now defaults to `.logs/zd-summary-server.log` in the project instead of `/tmp`; `ZD_SUMMARY_LOG` and `weekly_summaries.log_path` still override it.
 - `zd` closes its SQLite connections when each command's `with` block ends instead of leaving them to garbage collection (no more unclosed-database ResourceWarnings).
 - `zd` and `invoice.py` now log to the project's gitignored `.logs/zd.log` and `.logs/invoice.log` instead of `/tmp`; `ZD_LOG_FILE` / `INVOICE_LOG_FILE` still override the path.
